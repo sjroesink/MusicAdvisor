@@ -18,6 +18,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
+	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
@@ -88,6 +89,7 @@ func newHarness(t *testing.T, withSpotify bool) *harness {
 		CookieCfg:      auth.CookieConfig{},
 		Users:          users,
 		Spotify:        spotifyClient,
+		Signals:        signal.NewSQLStore(conn),
 		FrontendOKPath: "/",
 	})
 	srv := httptest.NewServer(handler)

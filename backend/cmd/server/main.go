@@ -27,6 +27,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		os.Exit(healthcheckMain())
 	}
+	if len(os.Args) > 2 && os.Args[1] == "--rebuild-affinity" {
+		os.Exit(rebuildAffinityMain(os.Args[2]))
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -77,6 +80,11 @@ func run() error {
 		}
 	}
 
+	// The signal store is always available — UI-emitted events like
+	// heard_good/dismiss must work even if the Spotify-driven sync is
+	// disabled.
+	sigStore := sigsvc.NewSQLStore(database)
+
 	// MusicBrainz + resolver + library sync — only when both Spotify and a
 	// User-Agent contact are configured. MB rejects anonymous clients, so
 	// skipping the sync service entirely is the honest fallback.
@@ -89,7 +97,6 @@ func run() error {
 			return err
 		}
 		resolverSvc := resolver.New(database, mbClient)
-		sigStore := sigsvc.NewSQLStore(database)
 		librarySync = library.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
 	} else if cfg.UserAgentContact == "" {
 		logger.Warn("library sync disabled: MA_USER_AGENT_CONTACT is required by MusicBrainz")
@@ -103,6 +110,7 @@ func run() error {
 		Users:          users,
 		Spotify:        spotifyClient,
 		LibrarySync:    librarySync,
+		Signals:        sigStore,
 		FrontendOKPath: "/",
 	})
 
@@ -139,6 +147,34 @@ func run() error {
 	}
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// rebuildAffinityMain is a one-shot migration: pre-Phase-4 syncs wrote raw
+// signals without updating affinity tables. Run once per user after upgrade:
+//
+//	./server --rebuild-affinity <user-id>
+func rebuildAffinityMain(userID string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("rebuild: config", "err", err)
+		return 1
+	}
+	database, err := db.Open(cfg.DatabasePath)
+	if err != nil {
+		slog.Error("rebuild: open db", "err", err)
+		return 1
+	}
+	defer database.Close()
+
+	store := sigsvc.NewSQLStore(database)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := store.Rebuild(ctx, userID); err != nil {
+		slog.Error("rebuild: failed", "user_id", userID, "err", err)
+		return 1
+	}
+	slog.Info("affinity rebuilt from signals", "user_id", userID)
+	return 0
 }
 
 func healthcheckMain() int {

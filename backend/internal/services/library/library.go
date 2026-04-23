@@ -335,11 +335,14 @@ func (s *Service) resolveBucket(ctx context.Context, userID string, b *artistBuc
 		)
 	}
 
-	// Followed artists get a saved_artists row + follow_add signal.
+	// Followed artists get a saved_artists row + follow_add signal. The
+	// signal fires only on first save: a resync of an already-followed
+	// artist shouldn't keep re-counting affinity.
 	if b.Followed && artistMBID != "" {
-		if err := s.insertSavedArtist(ctx, userID, artistMBID); err != nil {
+		inserted, err := s.insertSavedArtist(ctx, userID, artistMBID)
+		if err != nil {
 			r.Errors++
-		} else {
+		} else if inserted {
 			if err := s.signals.Append(ctx, signal.Event{
 				UserID:      userID,
 				Kind:        signal.FollowAdd,
@@ -383,8 +386,13 @@ func (s *Service) resolveOneAlbum(ctx context.Context, userID string, a spotify.
 		r.Errors++
 		return
 	}
-	if err := s.insertSavedAlbum(ctx, userID, res.MBID, a.AddedAt); err != nil {
+	inserted, err := s.insertSavedAlbum(ctx, userID, res.MBID, a.AddedAt)
+	if err != nil {
 		r.Errors++
+		return
+	}
+	if !inserted {
+		// Already saved on a prior sync — counter stays at whatever it is.
 		return
 	}
 	if err := s.signals.Append(ctx, signal.Event{
@@ -460,25 +468,36 @@ func (s *Service) upsertAlbumPlaceholder(ctx context.Context, placeholderMBID, s
 
 // ── saved_* ─────────────────────────────────────────────────────────
 
-func (s *Service) insertSavedArtist(ctx context.Context, userID, artistMBID string) error {
-	_, err := s.db.ExecContext(ctx, `
+// insertSavedArtist returns true when the row was actually inserted. Callers
+// should skip emitting the follow_add signal when it wasn't — a resync of an
+// already-saved artist shouldn't keep boosting affinity forever.
+func (s *Service) insertSavedArtist(ctx context.Context, userID, artistMBID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO saved_artists (user_id, artist_mbid, saved_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT DO NOTHING
 	`, userID, artistMBID, s.now().UTC())
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
-func (s *Service) insertSavedAlbum(ctx context.Context, userID, albumMBID string, savedAt time.Time) error {
+func (s *Service) insertSavedAlbum(ctx context.Context, userID, albumMBID string, savedAt time.Time) (bool, error) {
 	if savedAt.IsZero() {
 		savedAt = s.now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO saved_albums (user_id, album_mbid, saved_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT DO NOTHING
 	`, userID, albumMBID, savedAt)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ── sync_runs ───────────────────────────────────────────────────────
