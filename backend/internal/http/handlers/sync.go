@@ -11,15 +11,18 @@ import (
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
+	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 )
 
 // SyncDeps is what the sync endpoints need. LibrarySync may be nil when the
 // server boots without Spotify creds — in that case the endpoint returns a
-// clear 503 rather than silently succeeding.
+// clear 503 rather than silently succeeding. TopLists is optional and runs
+// only when both Spotify and MusicBrainz are available.
 type SyncDeps struct {
 	DB          *sql.DB
 	Logger      *slog.Logger
 	LibrarySync *library.Service
+	TopLists    *toplists.Service
 }
 
 // TriggerSync kicks a full library sync for the authenticated user in a
@@ -45,21 +48,41 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
 			d.Logger.Info("background sync queued", "user_id", userID)
-			result, err := d.LibrarySync.Sync(ctx, userID)
+
+			libResult, err := d.LibrarySync.Sync(ctx, userID)
 			if err != nil {
-				d.Logger.Warn("background sync failed", "user_id", userID, "err", err)
+				d.Logger.Warn("background library sync failed", "user_id", userID, "err", err)
 				return
 			}
-			d.Logger.Info("background sync finished",
+			d.Logger.Info("library sync finished",
 				"user_id", userID,
-				"run_id", result.RunID,
-				"status", result.Status,
-				"artists_added", result.ArtistsAdded,
-				"albums_added", result.AlbumsAdded,
-				"tracks_added", result.TracksAdded,
-				"unresolved", result.Unresolved,
-				"errors", result.Errors,
-				"duration_s", result.DurationMs/1000,
+				"run_id", libResult.RunID,
+				"status", libResult.Status,
+				"artists_added", libResult.ArtistsAdded,
+				"albums_added", libResult.AlbumsAdded,
+				"unresolved", libResult.Unresolved,
+				"errors", libResult.Errors,
+				"duration_s", libResult.DurationMs/1000,
+			)
+
+			if d.TopLists == nil {
+				return
+			}
+			topResult, err := d.TopLists.Sync(ctx, userID)
+			if err != nil {
+				d.Logger.Warn("background toplists sync failed", "user_id", userID, "err", err)
+				return
+			}
+			d.Logger.Info("toplists sync finished",
+				"user_id", userID,
+				"run_id", topResult.RunID,
+				"status", topResult.Status,
+				"ranges", topResult.Ranges,
+				"resolved", topResult.Resolved,
+				"unresolved", topResult.Unresolved,
+				"errors", topResult.Errors,
+				"duration_s", topResult.DurationMs/1000,
+				"skipped_reason", topResult.SkippedReason,
 			)
 		}()
 

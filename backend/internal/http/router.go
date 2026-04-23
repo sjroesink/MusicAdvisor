@@ -14,6 +14,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
+	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
@@ -25,6 +26,7 @@ type Deps struct {
 	Users          *user.Service
 	Spotify        *spotify.Client
 	LibrarySync    *library.Service
+	TopLists       *toplists.Service
 	Signals        *signal.SQLStore
 	FrontendOKPath string
 }
@@ -61,6 +63,7 @@ func NewRouter(d Deps) http.Handler {
 				DB:          d.DB,
 				Logger:      d.Logger,
 				LibrarySync: d.LibrarySync,
+				TopLists:    d.TopLists,
 			}
 			authed.Post("/sync/trigger", handlers.TriggerSync(syncDeps))
 			authed.Get("/sync/runs", handlers.ListSyncRuns(syncDeps))

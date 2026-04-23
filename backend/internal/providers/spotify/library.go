@@ -46,6 +46,22 @@ type FollowedArtist struct {
 	Name      string
 }
 
+// TopArtist describes one entry in /me/top/artists at a given rank.
+type TopArtist struct {
+	SpotifyID string
+	Name      string
+	Rank      int // 1-based, within the requested time_range
+}
+
+// TopTimeRange is the enum Spotify accepts for /me/top/* time_range.
+type TopTimeRange string
+
+const (
+	TopRangeShort  TopTimeRange = "short_term"
+	TopRangeMedium TopTimeRange = "medium_term"
+	TopRangeLong   TopTimeRange = "long_term"
+)
+
 // FetchSavedAlbums iterates /me/albums, yielding each album via onAlbum.
 // Returns the number of albums seen. Errors from onAlbum propagate and stop
 // iteration; HTTP errors are wrapped in ErrUpstream.
@@ -194,6 +210,36 @@ func (c *Client) FetchFollowedArtists(ctx context.Context, accessToken string, o
 		}
 		q.Set("after", page.Artists.Cursors.After)
 	}
+}
+
+// FetchTopArtists pulls /me/top/artists for one time_range. Spotify caps
+// limit at 50; we always ask for the max because a higher rank produces a
+// weaker top_rank signal and we want the full window in one call.
+//
+// Ranks returned are 1-based and match the order Spotify returns.
+func (c *Client) FetchTopArtists(ctx context.Context, accessToken string, tr TopTimeRange) ([]TopArtist, error) {
+	q := url.Values{
+		"time_range": {string(tr)},
+		"limit":      {"50"},
+	}
+	u := c.apiBase + "/me/top/artists?" + q.Encode()
+	var page struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := c.getJSON(ctx, u, accessToken, &page); err != nil {
+		return nil, err
+	}
+	out := make([]TopArtist, 0, len(page.Items))
+	for i, it := range page.Items {
+		if it.ID == "" {
+			continue
+		}
+		out = append(out, TopArtist{SpotifyID: it.ID, Name: it.Name, Rank: i + 1})
+	}
+	return out, nil
 }
 
 // getJSON is the shared authenticated-GET helper for library endpoints.

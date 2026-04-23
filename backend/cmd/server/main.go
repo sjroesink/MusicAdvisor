@@ -20,6 +20,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	sigsvc "github.com/sjroesink/music-advisor/backend/internal/services/signal"
+	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
@@ -85,10 +86,11 @@ func run() error {
 	// disabled.
 	sigStore := sigsvc.NewSQLStore(database)
 
-	// MusicBrainz + resolver + library sync — only when both Spotify and a
+	// MusicBrainz + resolver + sync services — only when both Spotify and a
 	// User-Agent contact are configured. MB rejects anonymous clients, so
-	// skipping the sync service entirely is the honest fallback.
+	// skipping the sync services entirely is the honest fallback.
 	var librarySync *library.Service
+	var topListsSync *toplists.Service
 	if spotifyClient != nil && cfg.UserAgentContact != "" {
 		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
 			Contact: cfg.UserAgentContact,
@@ -98,8 +100,9 @@ func run() error {
 		}
 		resolverSvc := resolver.New(database, mbClient)
 		librarySync = library.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
+		topListsSync = toplists.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
 	} else if cfg.UserAgentContact == "" {
-		logger.Warn("library sync disabled: MA_USER_AGENT_CONTACT is required by MusicBrainz")
+		logger.Warn("library & toplists sync disabled: MA_USER_AGENT_CONTACT is required by MusicBrainz")
 	}
 
 	handler := mahttp.NewRouter(mahttp.Deps{
@@ -110,6 +113,7 @@ func run() error {
 		Users:          users,
 		Spotify:        spotifyClient,
 		LibrarySync:    librarySync,
+		TopLists:       topListsSync,
 		Signals:        sigStore,
 		FrontendOKPath: "/",
 	})

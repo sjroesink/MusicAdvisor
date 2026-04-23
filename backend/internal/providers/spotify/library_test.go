@@ -93,6 +93,38 @@ func TestFetchSavedTracks_CapturesISRC(t *testing.T) {
 	}
 }
 
+func TestFetchTopArtists_ReturnsRankedSlice(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotRange string
+	mux.HandleFunc("/me/top/artists", func(w http.ResponseWriter, r *http.Request) {
+		gotRange = r.URL.Query().Get("time_range")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"items":[{"id":"ar1","name":"First"},{"id":"ar2","name":"Second"},{"id":"ar3","name":"Third"}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c, _ := spotify.NewClient(spotify.Config{
+		ClientID: "id", ClientSecret: "secret", RedirectURI: "http://x", APIBase: srv.URL, AuthBase: srv.URL,
+	})
+
+	got, err := c.FetchTopArtists(context.Background(), "tok", spotify.TopRangeMedium)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRange != "medium_term" {
+		t.Fatalf("time_range sent = %q, want medium_term", gotRange)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	if got[0].Rank != 1 || got[2].Rank != 3 {
+		t.Fatalf("ranks not 1-based: %+v", got)
+	}
+	if got[0].SpotifyID != "ar1" || got[1].Name != "Second" {
+		t.Fatalf("got[0..1] = %+v", got[:2])
+	}
+}
+
 func TestFetchFollowedArtists_CursorPagination(t *testing.T) {
 	mux := http.NewServeMux()
 	calls := 0
