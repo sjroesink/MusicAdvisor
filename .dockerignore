@@ -1,0 +1,17 @@
+.git
+.gitignore
+.design-bundle
+.playwright-mcp
+docs
+**/node_modules
+**/dist
+**/.vite
+backend/data
+backend/music-advisor
+backend/music-advisor.exe
+backend/*.db
+backend/*.db-*
+*.md
+!frontend/README.md
+.env
+.env.*
