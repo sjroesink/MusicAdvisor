@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { ConnectScreen } from "./components/ConnectScreen";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { useAuth } from "./hooks/useAuth";
@@ -9,16 +9,23 @@ import { LayoutStacked } from "./layouts/LayoutStacked";
 export function App() {
   const { auth, login } = useAuth();
   const theme = useTheme();
-  const advisor = useMusicAdvisor();
+  const advisor = useMusicAdvisor({ enabled: auth.state === "authenticated" });
 
-  // Once authenticated, fire the (still-mocked) feed loader so the UI
-  // keeps its streaming behavior while phases 3+ replace the simulator
-  // with real backend data.
+  // First sign-in with no library yet → kick off an initial sync. Repeat
+  // visits see stage !== "idle" because the feed already has header data
+  // and won't re-trigger.
+  const didKick = useRef(false);
   useEffect(() => {
-    if (auth.state === "authenticated" && advisor.stage === "idle") {
+    if (
+      auth.state === "authenticated" &&
+      advisor.stage === "idle" &&
+      advisor.libraryCount === 0 &&
+      !didKick.current
+    ) {
+      didKick.current = true;
       advisor.start();
     }
-  }, [auth.state, advisor]);
+  }, [auth.state, advisor.stage, advisor.libraryCount, advisor]);
 
   if (auth.state === "loading") {
     return (
