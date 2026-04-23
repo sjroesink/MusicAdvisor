@@ -11,9 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/config"
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
+	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
 func main() {
@@ -24,28 +27,6 @@ func main() {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
-}
-
-// healthcheckMain is invoked by the Docker healthcheck. It issues a local
-// HTTP GET against /healthz and exits 0 on a 2xx response.
-func healthcheckMain() int {
-	addr := os.Getenv("MA_ADDRESS")
-	if addr == "" || strings.HasPrefix(addr, ":") {
-		if addr == "" {
-			addr = ":8080"
-		}
-		addr = "127.0.0.1" + addr
-	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + addr + "/healthz")
-	if err != nil {
-		return 1
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 1
-	}
-	return 0
 }
 
 func run() error {
@@ -68,7 +49,40 @@ func run() error {
 	}
 	defer database.Close()
 
-	handler := mahttp.NewRouter(mahttp.Deps{DB: database, Logger: logger})
+	cipher, err := auth.NewCipher(cfg.SecretKey)
+	if err != nil {
+		return err
+	}
+
+	sessions := auth.NewSessionStore(database)
+	users := user.NewService(database, cipher)
+
+	cookieCfg := auth.CookieFromBaseURL(cfg.BaseURL)
+
+	spotifyClient, err := spotify.NewClient(spotify.Config{
+		ClientID:     cfg.SpotifyClientID,
+		ClientSecret: cfg.SpotifyClientSecret,
+		RedirectURI:  strings.TrimRight(cfg.BaseURL, "/") + "/api/auth/spotify/callback",
+	})
+	if err != nil {
+		if errors.Is(err, spotify.ErrNotConfigured) {
+			logger.Warn("spotify not configured; login routes will return 503",
+				"hint", "set MA_SPOTIFY_CLIENT_ID and MA_SPOTIFY_CLIENT_SECRET")
+			spotifyClient = nil
+		} else {
+			return err
+		}
+	}
+
+	handler := mahttp.NewRouter(mahttp.Deps{
+		DB:             database,
+		Logger:         logger,
+		Sessions:       sessions,
+		CookieCfg:      cookieCfg,
+		Users:          users,
+		Spotify:        spotifyClient,
+		FrontendOKPath: "/",
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Address,
@@ -105,6 +119,26 @@ func run() error {
 	return nil
 }
 
+func healthcheckMain() int {
+	addr := os.Getenv("MA_ADDRESS")
+	if addr == "" {
+		addr = ":8080"
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 1
+	}
+	return 0
+}
+
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
@@ -117,6 +151,5 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lvl = slog.LevelInfo
 	}
-	opts := &slog.HandlerOptions{Level: lvl}
-	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
