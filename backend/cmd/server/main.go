@@ -15,9 +15,11 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/config"
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/listenbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
+	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
@@ -95,8 +97,15 @@ func run() error {
 	var topListsSync *toplists.Service
 	var listeningSvc *listening.Service
 	var releasesSvc *releases.Service
+	var lbSimilarSvc *lbsimilar.Service
 	if spotifyClient != nil && cfg.UserAgentContact != "" {
 		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
+			Contact: cfg.UserAgentContact,
+		})
+		if err != nil {
+			return err
+		}
+		lbClient, err := listenbrainz.NewClient(listenbrainz.Config{
 			Contact: cfg.UserAgentContact,
 		})
 		if err != nil {
@@ -107,8 +116,9 @@ func run() error {
 		topListsSync = toplists.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
 		listeningSvc = listening.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
 		releasesSvc = releases.New(database, mbClient, logger)
+		lbSimilarSvc = lbsimilar.New(database, lbClient, mbClient, logger)
 	} else if cfg.UserAgentContact == "" {
-		logger.Warn("library, toplists, listening & releases sync disabled: MA_USER_AGENT_CONTACT is required by MusicBrainz")
+		logger.Warn("library, toplists, listening, releases & lb-similar sync disabled: MA_USER_AGENT_CONTACT is required")
 	}
 
 	handler := mahttp.NewRouter(mahttp.Deps{
@@ -122,6 +132,7 @@ func run() error {
 		TopLists:       topListsSync,
 		Listening:      listeningSvc,
 		Releases:       releasesSvc,
+		LBSimilar:      lbSimilarSvc,
 		Signals:        sigStore,
 		FrontendOKPath: "/",
 	})

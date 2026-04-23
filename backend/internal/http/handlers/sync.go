@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
+	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
@@ -28,6 +29,7 @@ type SyncDeps struct {
 	TopLists    *toplists.Service
 	Listening   *listening.Service
 	Releases    *releases.Service
+	LBSimilar   *lbsimilar.Service
 }
 
 // TriggerSync kicks a full library sync for the authenticated user in a
@@ -125,6 +127,26 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 						"errors", relResult.Errors,
 						"duration_s", relResult.DurationMs/1000,
 						"skipped_reason", relResult.SkippedReason,
+					)
+				}
+			}
+
+			if d.LBSimilar != nil {
+				lbResult, err := d.LBSimilar.Sync(ctx, userID)
+				if err != nil {
+					d.Logger.Warn("background lb-similar sync failed", "user_id", userID, "err", err)
+				} else {
+					d.Logger.Info("lb-similar sync finished",
+						"user_id", userID,
+						"run_id", lbResult.RunID,
+						"status", lbResult.Status,
+						"seeds", lbResult.SeedsScanned,
+						"similar", lbResult.SimilarDiscovered,
+						"new", lbResult.CandidatesNew,
+						"updated", lbResult.CandidatesUpdated,
+						"errors", lbResult.Errors,
+						"duration_s", lbResult.DurationMs/1000,
+						"skipped_reason", lbResult.SkippedReason,
 					)
 				}
 			}
