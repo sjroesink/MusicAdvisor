@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,13 +21,18 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
+	"github.com/sjroesink/music-advisor/backend/internal/sse"
 )
 
 type harness struct {
 	server  *httptest.Server
 	client  *http.Client
 	spotify *httptest.Server // mocked Spotify auth+api
+	db      *sql.DB
 }
+
+// DB returns the backing SQLite connection so tests can seed fixtures.
+func (h *harness) DB() *sql.DB { return h.db }
 
 func newHarness(t *testing.T, withSpotify bool) *harness {
 	t.Helper()
@@ -90,6 +96,7 @@ func newHarness(t *testing.T, withSpotify bool) *harness {
 		Users:          users,
 		Spotify:        spotifyClient,
 		Signals:        signal.NewSQLStore(conn),
+		Hub:            sse.NewHub(8),
 		FrontendOKPath: "/",
 	})
 	srv := httptest.NewServer(handler)
@@ -102,7 +109,7 @@ func newHarness(t *testing.T, withSpotify bool) *harness {
 			return http.ErrUseLastResponse // don't follow; we inspect redirects
 		},
 	}
-	return &harness{server: srv, client: client, spotify: spotifyMock}
+	return &harness{server: srv, client: client, spotify: spotifyMock, db: conn}
 }
 
 func TestMe_Unauthenticated_Returns401(t *testing.T) {

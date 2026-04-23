@@ -26,6 +26,7 @@ import (
 	sigsvc "github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
+	"github.com/sjroesink/music-advisor/backend/internal/sse"
 )
 
 func main() {
@@ -90,6 +91,9 @@ func run() error {
 	// disabled.
 	sigStore := sigsvc.NewSQLStore(database)
 
+	// In-memory SSE hub. Sized for a handful of concurrent tabs per user.
+	hub := sse.NewHub(32)
+
 	// MusicBrainz + resolver + sync services — only when both Spotify and a
 	// User-Agent contact are configured. MB rejects anonymous clients, so
 	// skipping the sync services entirely is the honest fallback.
@@ -134,6 +138,7 @@ func run() error {
 		Releases:       releasesSvc,
 		LBSimilar:      lbSimilarSvc,
 		Signals:        sigStore,
+		Hub:            hub,
 		FrontendOKPath: "/",
 	})
 

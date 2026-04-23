@@ -15,6 +15,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
+	"github.com/sjroesink/music-advisor/backend/internal/sse"
 )
 
 // SyncDeps is what the sync endpoints need. LibrarySync may be nil when the
@@ -30,6 +31,19 @@ type SyncDeps struct {
 	Listening   *listening.Service
 	Releases    *releases.Service
 	LBSimilar   *lbsimilar.Service
+	Hub         *sse.Hub
+}
+
+// emit publishes a phase-lifecycle event. When the hub is nil (tests or
+// degraded config) the call is a no-op.
+func (d SyncDeps) emit(userID, phase, status string) {
+	if d.Hub == nil {
+		return
+	}
+	d.Hub.Publish(userID, sse.Event{
+		Kind: "phase",
+		Data: `{"phase":"` + phase + `","status":"` + status + `"}`,
+	})
 }
 
 // TriggerSync kicks a full library sync for the authenticated user in a
@@ -55,12 +69,15 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
 			d.Logger.Info("background sync queued", "user_id", userID)
+			d.emit(userID, "library", "started")
 
 			libResult, err := d.LibrarySync.Sync(ctx, userID)
 			if err != nil {
 				d.Logger.Warn("background library sync failed", "user_id", userID, "err", err)
+				d.emit(userID, "library", "failed")
 				return
 			}
+			d.emit(userID, "library", libResult.Status)
 			d.Logger.Info("library sync finished",
 				"user_id", userID,
 				"run_id", libResult.RunID,
@@ -73,10 +90,13 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			)
 
 			if d.TopLists != nil {
+				d.emit(userID, "toplists", "started")
 				topResult, err := d.TopLists.Sync(ctx, userID)
 				if err != nil {
+					d.emit(userID, "toplists", "failed")
 					d.Logger.Warn("background toplists sync failed", "user_id", userID, "err", err)
 				} else {
+					d.emit(userID, "toplists", topResult.Status)
 					d.Logger.Info("toplists sync finished",
 						"user_id", userID,
 						"run_id", topResult.RunID,
@@ -93,10 +113,13 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			}
 
 			if d.Listening != nil {
+				d.emit(userID, "listening", "started")
 				listenResult, err := d.Listening.Sync(ctx, userID)
 				if err != nil {
+					d.emit(userID, "listening", "failed")
 					d.Logger.Warn("background listening sync failed", "user_id", userID, "err", err)
 				} else {
+					d.emit(userID, "listening", listenResult.Status)
 					d.Logger.Info("listening sync finished",
 						"user_id", userID,
 						"run_id", listenResult.RunID,
@@ -113,10 +136,13 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			}
 
 			if d.Releases != nil {
+				d.emit(userID, "releases", "started")
 				relResult, err := d.Releases.Sync(ctx, userID)
 				if err != nil {
+					d.emit(userID, "releases", "failed")
 					d.Logger.Warn("background releases sync failed", "user_id", userID, "err", err)
 				} else {
+					d.emit(userID, "releases", relResult.Status)
 					d.Logger.Info("releases sync finished",
 						"user_id", userID,
 						"run_id", relResult.RunID,
@@ -132,10 +158,13 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 			}
 
 			if d.LBSimilar != nil {
+				d.emit(userID, "lb-similar", "started")
 				lbResult, err := d.LBSimilar.Sync(ctx, userID)
 				if err != nil {
+					d.emit(userID, "lb-similar", "failed")
 					d.Logger.Warn("background lb-similar sync failed", "user_id", userID, "err", err)
 				} else {
+					d.emit(userID, "lb-similar", lbResult.Status)
 					d.Logger.Info("lb-similar sync finished",
 						"user_id", userID,
 						"run_id", lbResult.RunID,
@@ -150,6 +179,8 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 					)
 				}
 			}
+
+			d.emit(userID, "sync", "done")
 		}()
 
 		w.Header().Set("Content-Type", "application/json")

@@ -19,6 +19,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
+	"github.com/sjroesink/music-advisor/backend/internal/sse"
 )
 
 type Deps struct {
@@ -34,6 +35,7 @@ type Deps struct {
 	Releases       *releases.Service
 	LBSimilar      *lbsimilar.Service
 	Signals        *signal.SQLStore
+	Hub            *sse.Hub
 	FrontendOKPath string
 }
 
@@ -43,45 +45,69 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
-	r.Use(chimw.Timeout(30 * time.Second))
 
 	r.Get("/healthz", handlers.Health(d.DB, d.Logger))
 
 	r.Route("/api", func(api chi.Router) {
-		spotifyDeps := handlers.SpotifyAuthDeps{
-			DB:         d.DB,
-			Logger:     d.Logger,
-			Sessions:   d.Sessions,
-			CookieCfg:  d.CookieCfg,
-			Users:      d.Users,
-			Spotify:    d.Spotify,
-			FrontendOK: d.FrontendOKPath,
-		}
-		api.Get("/auth/spotify/login", handlers.SpotifyLogin(spotifyDeps))
-		api.Get("/auth/spotify/callback", handlers.SpotifyCallback(spotifyDeps))
-		api.Post("/auth/logout", handlers.Logout(d.Sessions, d.CookieCfg))
+		// Short-lived endpoints get a 30s timeout via chi's TimeoutHandler.
+		// SSE and any future websocket-style routes must NOT be under this
+		// middleware — it wraps http.ResponseWriter with buffering that
+		// breaks streaming.
+		api.Group(func(short chi.Router) {
+			short.Use(chimw.Timeout(30 * time.Second))
 
-		api.Group(func(authed chi.Router) {
-			authed.Use(auth.RequireAuth(d.Sessions, d.CookieCfg))
-			authed.Get("/me", handlers.Me(d.DB, d.Users, d.Logger))
-
-			syncDeps := handlers.SyncDeps{
-				DB:          d.DB,
-				Logger:      d.Logger,
-				LibrarySync: d.LibrarySync,
-				TopLists:    d.TopLists,
-				Listening:   d.Listening,
-				Releases:    d.Releases,
-				LBSimilar:   d.LBSimilar,
+			spotifyDeps := handlers.SpotifyAuthDeps{
+				DB:         d.DB,
+				Logger:     d.Logger,
+				Sessions:   d.Sessions,
+				CookieCfg:  d.CookieCfg,
+				Users:      d.Users,
+				Spotify:    d.Spotify,
+				FrontendOK: d.FrontendOKPath,
 			}
-			authed.Post("/sync/trigger", handlers.TriggerSync(syncDeps))
-			authed.Get("/sync/runs", handlers.ListSyncRuns(syncDeps))
+			short.Get("/auth/spotify/login", handlers.SpotifyLogin(spotifyDeps))
+			short.Get("/auth/spotify/callback", handlers.SpotifyCallback(spotifyDeps))
+			short.Post("/auth/logout", handlers.Logout(d.Sessions, d.CookieCfg))
 
-			authed.Post("/signals", handlers.PostSignal(handlers.SignalsDeps{
-				DB:      d.DB,
-				Logger:  d.Logger,
-				Signals: d.Signals,
-			}))
+			short.Group(func(authed chi.Router) {
+				authed.Use(auth.RequireAuth(d.Sessions, d.CookieCfg))
+				authed.Get("/me", handlers.Me(d.DB, d.Users, d.Logger))
+
+				syncDeps := handlers.SyncDeps{
+					DB:          d.DB,
+					Logger:      d.Logger,
+					LibrarySync: d.LibrarySync,
+					TopLists:    d.TopLists,
+					Listening:   d.Listening,
+					Releases:    d.Releases,
+					LBSimilar:   d.LBSimilar,
+					Hub:         d.Hub,
+				}
+				authed.Post("/sync/trigger", handlers.TriggerSync(syncDeps))
+				authed.Get("/sync/runs", handlers.ListSyncRuns(syncDeps))
+
+				authed.Post("/signals", handlers.PostSignal(handlers.SignalsDeps{
+					DB:      d.DB,
+					Logger:  d.Logger,
+					Signals: d.Signals,
+				}))
+
+				authed.Get("/feed", handlers.Feed(handlers.FeedDeps{
+					DB:     d.DB,
+					Logger: d.Logger,
+				}))
+			})
+		})
+
+		// Long-lived endpoints: no Timeout middleware.
+		api.Group(func(stream chi.Router) {
+			stream.Use(auth.RequireAuth(d.Sessions, d.CookieCfg))
+			if d.Hub != nil {
+				stream.Get("/feed/stream", handlers.FeedStream(handlers.FeedStreamDeps{
+					Logger: d.Logger,
+					Hub:    d.Hub,
+				}))
+			}
 		})
 	})
 
