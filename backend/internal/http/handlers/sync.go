@@ -12,19 +12,22 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
+	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 )
 
 // SyncDeps is what the sync endpoints need. LibrarySync may be nil when the
 // server boots without Spotify creds — in that case the endpoint returns a
-// clear 503 rather than silently succeeding. TopLists and Listening are
-// optional and only run when both Spotify and MusicBrainz are available.
+// clear 503 rather than silently succeeding. The MB-only services (TopLists,
+// Listening, Releases) are nil when MusicBrainz isn't configured and skip
+// silently during trigger.
 type SyncDeps struct {
 	DB          *sql.DB
 	Logger      *slog.Logger
 	LibrarySync *library.Service
 	TopLists    *toplists.Service
 	Listening   *listening.Service
+	Releases    *releases.Service
 }
 
 // TriggerSync kicks a full library sync for the authenticated user in a
@@ -103,6 +106,25 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 						"unresolved", listenResult.Unresolved,
 						"errors", listenResult.Errors,
 						"duration_ms", listenResult.DurationMs,
+					)
+				}
+			}
+
+			if d.Releases != nil {
+				relResult, err := d.Releases.Sync(ctx, userID)
+				if err != nil {
+					d.Logger.Warn("background releases sync failed", "user_id", userID, "err", err)
+				} else {
+					d.Logger.Info("releases sync finished",
+						"user_id", userID,
+						"run_id", relResult.RunID,
+						"status", relResult.Status,
+						"artists", relResult.ArtistsScanned,
+						"new", relResult.CandidatesNew,
+						"updated", relResult.CandidatesUpdated,
+						"errors", relResult.Errors,
+						"duration_s", relResult.DurationMs/1000,
+						"skipped_reason", relResult.SkippedReason,
 					)
 				}
 			}

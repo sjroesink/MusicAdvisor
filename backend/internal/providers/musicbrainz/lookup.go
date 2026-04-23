@@ -2,6 +2,7 @@ package musicbrainz
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 )
 
@@ -121,6 +122,69 @@ type Artist struct {
 	Name     string
 	SortName string
 	Score    int // MusicBrainz-returned match score 0..100
+}
+
+// ReleaseGroup is one entry from /release-group?artist=<MBID>. We keep the
+// subset needed to display a "new release" card and write a
+// discover_candidates row.
+type ReleaseGroup struct {
+	MBID             string
+	Title            string
+	PrimaryType      string // Album | EP | Single | Compilation | Other
+	FirstReleaseDate string // "YYYY-MM-DD"
+	ArtistID         string
+	ArtistName       string
+}
+
+// BrowseReleaseGroupsByArtist lists the release-groups attributed to one
+// artist, filtered to the main release kinds. MB caps limit at 100; callers
+// asking for more are silently truncated.
+//
+// The returned slice is in MB's natural order (which is not always
+// date-sorted); callers who care about recency should sort by
+// FirstReleaseDate after filtering.
+func (c *Client) BrowseReleaseGroupsByArtist(ctx context.Context, artistMBID string, limit int) ([]ReleaseGroup, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	q := url.Values{
+		"artist": {artistMBID},
+		"type":   {"album|ep|single"},
+		"limit":  {fmt.Sprintf("%d", limit)},
+		"fmt":    {"json"},
+	}
+	var body struct {
+		ReleaseGroups []struct {
+			ID               string `json:"id"`
+			Title            string `json:"title"`
+			PrimaryType      string `json:"primary-type"`
+			FirstReleaseDate string `json:"first-release-date"`
+			ArtistCredit     []struct {
+				Artist struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"artist"`
+			} `json:"artist-credit"`
+		} `json:"release-groups"`
+	}
+	if err := c.get(ctx, "/release-group", q, &body); err != nil {
+		return nil, err
+	}
+	out := make([]ReleaseGroup, 0, len(body.ReleaseGroups))
+	for _, rg := range body.ReleaseGroups {
+		r := ReleaseGroup{
+			MBID:             rg.ID,
+			Title:            rg.Title,
+			PrimaryType:      rg.PrimaryType,
+			FirstReleaseDate: rg.FirstReleaseDate,
+		}
+		if len(rg.ArtistCredit) > 0 {
+			r.ArtistID = rg.ArtistCredit[0].Artist.ID
+			r.ArtistName = rg.ArtistCredit[0].Artist.Name
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // SearchArtistByName returns the top MB candidate for a given name. Tight
