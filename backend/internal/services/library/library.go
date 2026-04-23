@@ -1,12 +1,28 @@
-// Package library performs a full Spotify library sync for one user:
-// fetches saved albums / tracks / followed artists, resolves each to a
-// MusicBrainz ID, upserts catalog + saved_* rows, and emits the first-class
-// library_add / follow_add signals that later phases build on.
+// Package library performs a prioritized Spotify library sync for one user.
 //
-// A sync is long-running (MusicBrainz is 1 req/s) so orchestrators should
-// run this in a goroutine and report progress through the sync_runs table.
-// Errors on individual items are logged and counted but don't abort the
-// overall run — partial success is encoded as sync_runs.status = 'partial'.
+// The sync runs in three phases:
+//
+//  1. Gather — fetch followed artists and saved albums from Spotify into
+//     memory. Spotify calls are cheap; no MusicBrainz traffic yet.
+//     Individual liked tracks are intentionally excluded: they're noisier
+//     than curated albums/follows and would multiply MB calls by 10×. We
+//     can add them back in a later phase if the signal turns out to be
+//     useful.
+//
+//  2. Rank — bucket every item by its primary artist and score the bucket:
+//     albums * 3 + (followed ? 10 : 0). Sort buckets descending. The user's
+//     most-relevant artists end up at the top, so their catalog is resolved
+//     first.
+//
+//  3. Resolve — walk the ranked buckets. For each: resolve the artist via
+//     MusicBrainz, upsert the catalog row, emit follow_add if followed,
+//     then resolve and upsert that artist's albums, emitting library_add
+//     signals as we go.
+//
+// Why this order: MusicBrainz caps all clients at 1 req/s. Priority order
+// means the first minutes of a sync already cover the user's heaviest-
+// listened artists, which is what downstream discover/new-release jobs care
+// about most. Less-frequent artists resolve later without blocking value.
 package library
 
 import (
@@ -15,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,37 +40,37 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 )
 
-// TokenProvider decouples the sync from the user service. Given a user ID
-// and provider name, it returns a fresh access token (handling refresh if
-// needed). Library sync is provider-specific but stays test-friendly.
+// TokenProvider decouples the sync from the user service.
 type TokenProvider interface {
-	AccessToken(ctx context.Context, userID, provider string, refresh func(ctx context.Context, externalID, refreshToken string) (string, string, time.Time, error)) (string, error)
+	AccessToken(ctx context.Context, userID, provider string,
+		refresh func(ctx context.Context, externalID, refreshToken string) (string, string, time.Time, error),
+	) (string, error)
 }
 
-// SpotifyClient is the slice of *spotify.Client we need.
+// SpotifyClient is the slice of *spotify.Client we need for the current
+// sync. FetchSavedTracks lives on *spotify.Client but isn't wired here; a
+// later phase can extend this interface when we decide to pull tracks.
 type SpotifyClient interface {
 	FetchSavedAlbums(ctx context.Context, accessToken string, onAlbum func(spotify.SavedAlbum) error) (int, error)
-	FetchSavedTracks(ctx context.Context, accessToken string, onTrack func(spotify.SavedTrack) error) (int, error)
 	FetchFollowedArtists(ctx context.Context, accessToken string, onArtist func(spotify.FollowedArtist) error) (int, error)
 	RefreshToken(ctx context.Context, refreshToken string) (spotify.TokenSet, error)
 }
 
-// Resolver is the minimal surface we need from the resolver service.
+// Resolver is the minimal surface we need. ResolveTrack lives on the
+// resolver service but isn't used here.
 type Resolver interface {
 	ResolveAlbum(ctx context.Context, spotifyID, upc string) (resolver.Result, error)
-	ResolveTrack(ctx context.Context, spotifyID, isrc string) (resolver.Result, error)
 	ResolveArtistByName(ctx context.Context, spotifyID, name string) (resolver.Result, error)
 }
 
-// Service runs library syncs.
 type Service struct {
-	db        *sql.DB
-	tokens    TokenProvider
-	spotify   SpotifyClient
-	resolver  Resolver
-	signals   signal.Writer
-	logger    *slog.Logger
-	now       func() time.Time
+	db       *sql.DB
+	tokens   TokenProvider
+	spotify  SpotifyClient
+	resolver Resolver
+	signals  signal.Writer
+	logger   *slog.Logger
+	now      func() time.Time
 }
 
 func New(
@@ -78,20 +95,36 @@ func New(
 	}
 }
 
-// RunResult summarizes what a single sync did.
+// RunResult summarizes one sync run. TracksAdded is retained for forward
+// compatibility; this phase of the sync doesn't populate it.
 type RunResult struct {
-	RunID         int64
-	Status        string // "ok" | "partial" | "failed"
-	AlbumsAdded   int
-	TracksAdded   int
-	ArtistsAdded  int
-	Unresolved    int
-	Errors        int
-	DurationMs    int64
+	RunID        int64
+	Status       string // "ok" | "partial" | "failed"
+	AlbumsAdded  int
+	TracksAdded  int
+	ArtistsAdded int
+	Unresolved   int
+	Errors       int
+	DurationMs   int64
 }
 
-// Sync performs a full library sync for user userID. Returns even on partial
-// failure — callers check Status.
+// ── Gather-phase aggregates ─────────────────────────────────────────
+
+// artistBucket groups a user's library entries by their primary artist.
+// An artist can appear as a follow, as the primary artist of a saved album,
+// or both. score is computed once in rank().
+type artistBucket struct {
+	SpotifyID string
+	Name      string
+
+	Followed bool
+	Albums   []spotify.SavedAlbum
+
+	score float64
+}
+
+// Sync fetches all Spotify library data, buckets by artist, ranks, and
+// resolves against MusicBrainz in that priority order.
 func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 	started := s.now().UTC()
 	runID, err := s.startRun(ctx, userID, "spotify-library", started)
@@ -114,26 +147,29 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 		return result, err
 	}
 
-	// Followed artists first — albums/tracks often reference artist IDs we
-	// can now match without a search (saved_artists row pre-populates them).
-	aErr := s.syncFollowedArtists(ctx, userID, accessToken, &result)
-	alErr := s.syncSavedAlbums(ctx, userID, accessToken, &result)
-	tErr := s.syncSavedTracks(ctx, userID, accessToken, &result)
+	buckets, gatherErr := s.gather(ctx, accessToken)
+	s.rank(buckets)
+	ranked := bucketsByScoreDesc(buckets)
+
+	s.logger.Info("sync gathered library",
+		"user_id", userID,
+		"distinct_artists", len(ranked),
+		"gather_error", errText(gatherErr),
+	)
+
+	for _, b := range ranked {
+		s.resolveBucket(ctx, userID, b, &result)
+	}
 
 	status := "ok"
 	var finalErr string
-	if aErr != nil || alErr != nil || tErr != nil || result.Errors > 0 || result.Unresolved > 0 {
+	if gatherErr != nil || result.Errors > 0 || result.Unresolved > 0 {
 		status = "partial"
 	}
-	if aErr != nil {
-		finalErr = appendErr(finalErr, "artists: "+aErr.Error())
+	if gatherErr != nil {
+		finalErr = appendErr(finalErr, "gather: "+gatherErr.Error())
 	}
-	if alErr != nil {
-		finalErr = appendErr(finalErr, "albums: "+alErr.Error())
-	}
-	if tErr != nil {
-		finalErr = appendErr(finalErr, "tracks: "+tErr.Error())
-	}
+
 	finished := s.now().UTC()
 	itemsAdded := result.AlbumsAdded + result.TracksAdded + result.ArtistsAdded
 	s.finishRun(ctx, runID, status, itemsAdded, finalErr, finished)
@@ -142,163 +178,188 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 	return result, nil
 }
 
-func (s *Service) syncFollowedArtists(ctx context.Context, userID, token string, r *RunResult) error {
-	_, err := s.spotify.FetchFollowedArtists(ctx, token, func(a spotify.FollowedArtist) error {
-		res, rerr := s.resolver.ResolveArtistByName(ctx, a.SpotifyID, a.Name)
-		if errors.Is(rerr, resolver.ErrUnresolved) {
-			r.Unresolved++
+// ── Phase 1: gather ─────────────────────────────────────────────────
+
+func (s *Service) gather(ctx context.Context, accessToken string) (map[string]*artistBucket, error) {
+	buckets := map[string]*artistBucket{}
+	get := func(id, name string) *artistBucket {
+		if id == "" {
 			return nil
 		}
-		if rerr != nil {
-			s.logger.Warn("follow sync: resolve failed", "spotify_id", a.SpotifyID, "err", rerr)
-			r.Errors++
-			return nil
+		b, ok := buckets[id]
+		if !ok {
+			b = &artistBucket{SpotifyID: id, Name: name}
+			buckets[id] = b
 		}
-		if err := s.upsertArtist(ctx, res.MBID, a.SpotifyID, a.Name); err != nil {
-			r.Errors++
-			return nil
+		if b.Name == "" && name != "" {
+			b.Name = name
 		}
-		if err := s.insertSavedArtist(ctx, userID, res.MBID); err != nil {
-			r.Errors++
-			return nil
+		return b
+	}
+
+	var combined error
+
+	_, err := s.spotify.FetchFollowedArtists(ctx, accessToken, func(a spotify.FollowedArtist) error {
+		if b := get(a.SpotifyID, a.Name); b != nil {
+			b.Followed = true
 		}
-		if err := s.signals.Append(ctx, signal.Event{
-			UserID:      userID,
-			Kind:        signal.FollowAdd,
-			SubjectType: signal.SubjectArtist,
-			SubjectID:   res.MBID,
-			Source:      signal.SourceLibrary,
-		}); err != nil {
-			r.Errors++
-			return nil
-		}
-		r.ArtistsAdded++
 		return nil
 	})
-	return err
-}
+	if err != nil {
+		combined = appendErrErr(combined, fmt.Errorf("followed: %w", err))
+	}
 
-func (s *Service) syncSavedAlbums(ctx context.Context, userID, token string, r *RunResult) error {
-	_, err := s.spotify.FetchSavedAlbums(ctx, token, func(a spotify.SavedAlbum) error {
-		res, rerr := s.resolver.ResolveAlbum(ctx, a.SpotifyID, a.UPC)
-		if errors.Is(rerr, resolver.ErrUnresolved) {
-			r.Unresolved++
-			return nil
+	_, err = s.spotify.FetchSavedAlbums(ctx, accessToken, func(a spotify.SavedAlbum) error {
+		if b := get(a.ArtistID, a.ArtistName); b != nil {
+			b.Albums = append(b.Albums, a)
 		}
-		if rerr != nil {
-			s.logger.Warn("album sync: resolve failed", "spotify_id", a.SpotifyID, "err", rerr)
-			r.Errors++
-			return nil
-		}
-		// Side-channel: the resolver handed back the primary artist. Make
-		// sure the artist exists before the album FK fires.
-		artistMBID := res.ArtistMBID
-		if artistMBID != "" && a.ArtistID != "" {
-			if err := s.upsertArtist(ctx, artistMBID, a.ArtistID, res.ArtistName); err != nil {
-				r.Errors++
-				return nil
-			}
-		} else if artistMBID == "" && a.ArtistID != "" && a.ArtistName != "" {
-			artistMBID = "sp:" + a.ArtistID
-			// Store a placeholder mbid so the FK holds; the artist can be
-			// upgraded later when the follow-sync or a retry resolves it.
-			if err := s.upsertArtistPlaceholder(ctx, artistMBID, a.ArtistID, a.ArtistName); err != nil {
-				r.Errors++
-				return nil
-			}
-		}
-
-		if err := s.upsertAlbum(ctx, res, a, artistMBID); err != nil {
-			r.Errors++
-			return nil
-		}
-		if err := s.insertSavedAlbum(ctx, userID, res.MBID, a.AddedAt); err != nil {
-			r.Errors++
-			return nil
-		}
-		if err := s.signals.Append(ctx, signal.Event{
-			UserID:      userID,
-			Kind:        signal.LibraryAdd,
-			SubjectType: signal.SubjectAlbum,
-			SubjectID:   res.MBID,
-			Source:      signal.SourceLibrary,
-		}); err != nil {
-			r.Errors++
-			return nil
-		}
-		r.AlbumsAdded++
 		return nil
 	})
-	return err
+	if err != nil {
+		combined = appendErrErr(combined, fmt.Errorf("albums: %w", err))
+	}
+
+	return buckets, combined
 }
 
-func (s *Service) syncSavedTracks(ctx context.Context, userID, token string, r *RunResult) error {
-	_, err := s.spotify.FetchSavedTracks(ctx, token, func(t spotify.SavedTrack) error {
-		res, rerr := s.resolver.ResolveTrack(ctx, t.SpotifyID, t.ISRC)
-		if errors.Is(rerr, resolver.ErrUnresolved) {
-			r.Unresolved++
-			return nil
-		}
-		if rerr != nil {
-			s.logger.Warn("track sync: resolve failed", "spotify_id", t.SpotifyID, "err", rerr)
-			r.Errors++
-			return nil
-		}
-		// Ensure artist + album rows exist before inserting the track.
-		artistMBID := res.ArtistMBID
-		if artistMBID == "" && t.ArtistID != "" && t.ArtistName != "" {
-			artistMBID = "sp:" + t.ArtistID
-			if err := s.upsertArtistPlaceholder(ctx, artistMBID, t.ArtistID, t.ArtistName); err != nil {
-				r.Errors++
-				return nil
-			}
-		} else if artistMBID != "" && t.ArtistID != "" {
-			_ = s.upsertArtist(ctx, artistMBID, t.ArtistID, res.ArtistName)
-		}
+// ── Phase 2: rank ───────────────────────────────────────────────────
 
-		albumMBID := res.ReleaseGroupID
-		if albumMBID == "" && t.AlbumID != "" {
-			albumMBID = "sp:" + t.AlbumID
-			if err := s.upsertAlbumPlaceholder(ctx, albumMBID, t.AlbumID, t.AlbumName, artistMBID); err != nil {
-				r.Errors++
-				return nil
-			}
-		} else if albumMBID != "" {
-			// The track resolver handed us a real release-group MBID but
-			// didn't necessarily sync that album separately (it may not be
-			// saved). Upsert a minimal album row so the track FK holds;
-			// the album-sync (or a later MB enrichment job) can fill it in.
-			if err := s.upsertAlbumPlaceholder(ctx, albumMBID, t.AlbumID, t.AlbumName, artistMBID); err != nil {
-				r.Errors++
-				return nil
-			}
-		}
+func (s *Service) rank(buckets map[string]*artistBucket) {
+	for _, b := range buckets {
+		b.score = scoreBucket(b)
+	}
+}
 
-		if err := s.upsertTrack(ctx, res.MBID, t.SpotifyID, albumMBID, artistMBID, t.Name, t.DurationMs); err != nil {
-			r.Errors++
-			return nil
+// scoreBucket ranks an artist. An explicit follow is the strongest signal;
+// a saved album is a deliberate act per album.
+func scoreBucket(b *artistBucket) float64 {
+	score := float64(len(b.Albums)) * 3.0
+	if b.Followed {
+		score += 10
+	}
+	return score
+}
+
+func bucketsByScoreDesc(buckets map[string]*artistBucket) []*artistBucket {
+	out := make([]*artistBucket, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, b)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
 		}
-		if err := s.insertSavedTrack(ctx, userID, res.MBID, t.AddedAt); err != nil {
-			r.Errors++
-			return nil
+		// Stable tie-breaker: followed before not-followed; then alpha by name.
+		if out[i].Followed != out[j].Followed {
+			return out[i].Followed
 		}
-		if err := s.signals.Append(ctx, signal.Event{
-			UserID:      userID,
-			Kind:        signal.LibraryAdd,
-			SubjectType: signal.SubjectTrack,
-			SubjectID:   res.MBID,
-			Source:      signal.SourceLibrary,
-		}); err != nil {
-			r.Errors++
-			return nil
-		}
-		r.TracksAdded++
-		return nil
+		return out[i].Name < out[j].Name
 	})
-	return err
+	return out
 }
 
-// ── catalog upserts ──────────────────────────────────────────────────
+// ── Phase 3: resolve one bucket ─────────────────────────────────────
+
+func (s *Service) resolveBucket(ctx context.Context, userID string, b *artistBucket, r *RunResult) {
+	// Try to resolve the artist. For followed artists we need an MBID even
+	// if MB can't match the name (we still want a saved_artists row). For
+	// non-followed buckets we skip the placeholder so album/track resolution
+	// can freely upsert the real-MBID artist row — creating the placeholder
+	// eagerly would otherwise collide on the (spotify_id) UNIQUE constraint.
+	var artistMBID string
+	ares, err := s.resolver.ResolveArtistByName(ctx, b.SpotifyID, b.Name)
+	switch {
+	case errors.Is(err, resolver.ErrUnresolved):
+		if b.Followed {
+			if b.Name != "" && b.SpotifyID != "" {
+				artistMBID = "sp:" + b.SpotifyID
+				if upErr := s.upsertArtistPlaceholder(ctx, artistMBID, b.SpotifyID, b.Name); upErr != nil {
+					r.Errors++
+					return
+				}
+			}
+			r.Unresolved++
+		}
+		// non-followed + unresolved: silently skip; a later album/track
+		// resolution may still land the real artist row.
+	case err != nil:
+		s.logger.Warn("resolve artist failed", "spotify_id", b.SpotifyID, "err", err)
+		r.Errors++
+		return
+	default:
+		artistMBID = ares.MBID
+		if err := s.upsertArtist(ctx, artistMBID, b.SpotifyID, b.Name); err != nil {
+			r.Errors++
+			return
+		}
+	}
+
+	// Followed artists get a saved_artists row + follow_add signal.
+	if b.Followed && artistMBID != "" {
+		if err := s.insertSavedArtist(ctx, userID, artistMBID); err != nil {
+			r.Errors++
+		} else {
+			if err := s.signals.Append(ctx, signal.Event{
+				UserID:      userID,
+				Kind:        signal.FollowAdd,
+				SubjectType: signal.SubjectArtist,
+				SubjectID:   artistMBID,
+				Source:      signal.SourceLibrary,
+			}); err != nil {
+				r.Errors++
+			} else {
+				r.ArtistsAdded++
+			}
+		}
+	}
+
+	for _, a := range b.Albums {
+		s.resolveOneAlbum(ctx, userID, a, artistMBID, r)
+	}
+}
+
+func (s *Service) resolveOneAlbum(ctx context.Context, userID string, a spotify.SavedAlbum, fallbackArtistMBID string, r *RunResult) {
+	res, err := s.resolver.ResolveAlbum(ctx, a.SpotifyID, a.UPC)
+	if errors.Is(err, resolver.ErrUnresolved) {
+		r.Unresolved++
+		return
+	}
+	if err != nil {
+		s.logger.Warn("album resolve failed", "spotify_id", a.SpotifyID, "err", err)
+		r.Errors++
+		return
+	}
+
+	artistMBID := res.ArtistMBID
+	if artistMBID == "" {
+		artistMBID = fallbackArtistMBID
+	}
+	if artistMBID != "" && a.ArtistID != "" && res.ArtistName != "" {
+		_ = s.upsertArtist(ctx, artistMBID, a.ArtistID, res.ArtistName)
+	}
+
+	if err := s.upsertAlbum(ctx, res, a, artistMBID); err != nil {
+		r.Errors++
+		return
+	}
+	if err := s.insertSavedAlbum(ctx, userID, res.MBID, a.AddedAt); err != nil {
+		r.Errors++
+		return
+	}
+	if err := s.signals.Append(ctx, signal.Event{
+		UserID:      userID,
+		Kind:        signal.LibraryAdd,
+		SubjectType: signal.SubjectAlbum,
+		SubjectID:   res.MBID,
+		Source:      signal.SourceLibrary,
+	}); err != nil {
+		r.Errors++
+		return
+	}
+	r.AlbumsAdded++
+}
+
+// ── catalog upserts (unchanged) ─────────────────────────────────────
 
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -350,23 +411,7 @@ func (s *Service) upsertAlbumPlaceholder(ctx context.Context, placeholderMBID, s
 	return err
 }
 
-func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, albumMBID, artistMBID, name string, durationMs int) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (mbid) DO UPDATE SET
-		  spotify_id   = COALESCE(excluded.spotify_id, tracks.spotify_id),
-		  album_mbid   = COALESCE(excluded.album_mbid, tracks.album_mbid),
-		  artist_mbid  = COALESCE(excluded.artist_mbid, tracks.artist_mbid),
-		  title        = excluded.title,
-		  duration_sec = COALESCE(excluded.duration_sec, tracks.duration_sec),
-		  updated_at   = excluded.updated_at
-	`, mbid, nullIfEmpty(spotifyID), nullIfEmpty(albumMBID), nullIfEmpty(artistMBID),
-		name, zeroAsNull(durationMs/1000), s.now().UTC())
-	return err
-}
-
-// ── saved_* inserts ─────────────────────────────────────────────────
+// ── saved_* ─────────────────────────────────────────────────────────
 
 func (s *Service) insertSavedArtist(ctx context.Context, userID, artistMBID string) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -386,18 +431,6 @@ func (s *Service) insertSavedAlbum(ctx context.Context, userID, albumMBID string
 		VALUES (?, ?, ?)
 		ON CONFLICT DO NOTHING
 	`, userID, albumMBID, savedAt)
-	return err
-}
-
-func (s *Service) insertSavedTrack(ctx context.Context, userID, trackMBID string, savedAt time.Time) error {
-	if savedAt.IsZero() {
-		savedAt = s.now().UTC()
-	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO saved_tracks (user_id, track_mbid, saved_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT DO NOTHING
-	`, userID, trackMBID, savedAt)
 	return err
 }
 
@@ -457,9 +490,20 @@ func appendErr(existing, add string) string {
 	return existing + "; " + add
 }
 
-// normalizeAlbumType maps MB or Spotify type labels into our canonical
-// {Album, EP, Single}. MB primary-type is more reliable when present; Spotify
-// uses lowercase album/single/compilation.
+func appendErrErr(existing, add error) error {
+	if existing == nil {
+		return add
+	}
+	return fmt.Errorf("%s; %s", existing.Error(), add.Error())
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func normalizeAlbumType(mbType, spType string) string {
 	t := strings.ToLower(firstNonEmpty(mbType, spType))
 	switch t {
@@ -475,6 +519,3 @@ func normalizeAlbumType(mbType, spType string) string {
 		return "Album"
 	}
 }
-
-// Err is a sentinel for callers that want to surface generic sync failures.
-var Err = fmt.Errorf("library sync failed")
