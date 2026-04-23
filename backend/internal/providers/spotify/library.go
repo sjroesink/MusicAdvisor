@@ -53,6 +53,38 @@ type TopArtist struct {
 	Rank      int // 1-based, within the requested time_range
 }
 
+// TopTrack describes one entry in /me/top/tracks at a given rank. Mirrors
+// SavedTrack fields; the duplication is deliberate since /top/tracks adds
+// a rank and Spotify's paginated /tracks shape subtly differs per
+// endpoint.
+type TopTrack struct {
+	SpotifyID  string
+	Name       string
+	DurationMs int
+	ISRC       string
+	AlbumID    string
+	AlbumName  string
+	ArtistID   string
+	ArtistName string
+	Rank       int
+}
+
+// RecentPlay describes one entry in /me/player/recently-played. played_at
+// is Spotify's "played at this moment"; progress_ms is not exposed on
+// recently-played (only via the currently-playing endpoint).
+type RecentPlay struct {
+	SpotifyID   string
+	Name        string
+	DurationMs  int
+	ISRC        string
+	AlbumID     string
+	AlbumName   string
+	ArtistID    string
+	ArtistName  string
+	PlayedAt    time.Time
+	ContextURI  string // optional — album or playlist context
+}
+
 // TopTimeRange is the enum Spotify accepts for /me/top/* time_range.
 type TopTimeRange string
 
@@ -238,6 +270,123 @@ func (c *Client) FetchTopArtists(ctx context.Context, accessToken string, tr Top
 			continue
 		}
 		out = append(out, TopArtist{SpotifyID: it.ID, Name: it.Name, Rank: i + 1})
+	}
+	return out, nil
+}
+
+// FetchTopTracks pulls /me/top/tracks for one time_range. Single page, 50
+// items — same reasoning as FetchTopArtists.
+func (c *Client) FetchTopTracks(ctx context.Context, accessToken string, tr TopTimeRange) ([]TopTrack, error) {
+	q := url.Values{
+		"time_range": {string(tr)},
+		"limit":      {"50"},
+	}
+	u := c.apiBase + "/me/top/tracks?" + q.Encode()
+	var page struct {
+		Items []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			DurationMs  int    `json:"duration_ms"`
+			ExternalIDs struct {
+				ISRC string `json:"isrc"`
+			} `json:"external_ids"`
+			Album struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"album"`
+			Artists []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"artists"`
+		} `json:"items"`
+	}
+	if err := c.getJSON(ctx, u, accessToken, &page); err != nil {
+		return nil, err
+	}
+	out := make([]TopTrack, 0, len(page.Items))
+	for i, it := range page.Items {
+		if it.ID == "" {
+			continue
+		}
+		tt := TopTrack{
+			SpotifyID:  it.ID,
+			Name:       it.Name,
+			DurationMs: it.DurationMs,
+			ISRC:       it.ExternalIDs.ISRC,
+			AlbumID:    it.Album.ID,
+			AlbumName:  it.Album.Name,
+			Rank:       i + 1,
+		}
+		if len(it.Artists) > 0 {
+			tt.ArtistID = it.Artists[0].ID
+			tt.ArtistName = it.Artists[0].Name
+		}
+		out = append(out, tt)
+	}
+	return out, nil
+}
+
+// FetchRecentlyPlayed pulls /me/player/recently-played. Spotify exposes
+// this via cursor pagination; 'after' takes a unix-ms timestamp to get
+// plays since the last poll. When after is zero, returns the most recent
+// 50 plays unbounded.
+//
+// We don't follow the 'next' cursor here: skip detection relies on
+// adjacent plays within one page, and the 20-minute poll cadence is
+// short enough that 50 items/page is plenty.
+func (c *Client) FetchRecentlyPlayed(ctx context.Context, accessToken string, after time.Time) ([]RecentPlay, error) {
+	q := url.Values{"limit": {"50"}}
+	if !after.IsZero() {
+		q.Set("after", strconv.FormatInt(after.UnixMilli(), 10))
+	}
+	u := c.apiBase + "/me/player/recently-played?" + q.Encode()
+	var page struct {
+		Items []struct {
+			PlayedAt string `json:"played_at"`
+			Context  struct {
+				URI string `json:"uri"`
+			} `json:"context"`
+			Track struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				DurationMs  int    `json:"duration_ms"`
+				ExternalIDs struct {
+					ISRC string `json:"isrc"`
+				} `json:"external_ids"`
+				Album struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"album"`
+				Artists []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"artists"`
+			} `json:"track"`
+		} `json:"items"`
+	}
+	if err := c.getJSON(ctx, u, accessToken, &page); err != nil {
+		return nil, err
+	}
+	out := make([]RecentPlay, 0, len(page.Items))
+	for _, it := range page.Items {
+		if it.Track.ID == "" {
+			continue
+		}
+		rp := RecentPlay{
+			SpotifyID:  it.Track.ID,
+			Name:       it.Track.Name,
+			DurationMs: it.Track.DurationMs,
+			ISRC:       it.Track.ExternalIDs.ISRC,
+			AlbumID:    it.Track.Album.ID,
+			AlbumName:  it.Track.Album.Name,
+			PlayedAt:   parseTimeRFC3339(it.PlayedAt),
+			ContextURI: it.Context.URI,
+		}
+		if len(it.Track.Artists) > 0 {
+			rp.ArtistID = it.Track.Artists[0].ID
+			rp.ArtistName = it.Track.Artists[0].Name
+		}
+		out = append(out, rp)
 	}
 	return out, nil
 }

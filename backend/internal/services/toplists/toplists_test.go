@@ -27,9 +27,10 @@ func (f *fakeTokens) AccessToken(_ context.Context, _, _ string,
 }
 
 type fakeSpotify struct {
-	byRange map[spotify.TopTimeRange][]spotify.TopArtist
-	errors  map[spotify.TopTimeRange]error
-	calls   int
+	byRange       map[spotify.TopTimeRange][]spotify.TopArtist
+	tracksByRange map[spotify.TopTimeRange][]spotify.TopTrack
+	errors        map[spotify.TopTimeRange]error
+	calls         int
 }
 
 func (f *fakeSpotify) FetchTopArtists(_ context.Context, _ string, tr spotify.TopTimeRange) ([]spotify.TopArtist, error) {
@@ -40,16 +41,37 @@ func (f *fakeSpotify) FetchTopArtists(_ context.Context, _ string, tr spotify.To
 	return f.byRange[tr], nil
 }
 
+func (f *fakeSpotify) FetchTopTracks(_ context.Context, _ string, tr spotify.TopTimeRange) ([]spotify.TopTrack, error) {
+	f.calls++
+	return f.tracksByRange[tr], nil
+}
+
 func (f *fakeSpotify) RefreshToken(_ context.Context, _ string) (spotify.TokenSet, error) {
 	return spotify.TokenSet{AccessToken: "n", RefreshToken: "r", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 type fakeResolver struct {
 	artists map[string]resolver.Result
+	tracks  map[string]resolver.Result
+	albums  map[string]resolver.Result
 }
 
 func (r *fakeResolver) ResolveArtistByName(_ context.Context, spotifyID, _ string) (resolver.Result, error) {
 	if res, ok := r.artists[spotifyID]; ok {
+		return res, nil
+	}
+	return resolver.Result{}, resolver.ErrUnresolved
+}
+
+func (r *fakeResolver) ResolveTrack(_ context.Context, spotifyID, _ string) (resolver.Result, error) {
+	if res, ok := r.tracks[spotifyID]; ok {
+		return res, nil
+	}
+	return resolver.Result{}, resolver.ErrUnresolved
+}
+
+func (r *fakeResolver) ResolveAlbum(_ context.Context, spotifyID, _ string) (resolver.Result, error) {
+	if res, ok := r.albums[spotifyID]; ok {
 		return res, nil
 	}
 	return resolver.Result{}, resolver.ErrUnresolved
@@ -102,7 +124,7 @@ func TestSync_HappyPath_AllThreeRanges(t *testing.T) {
 	if r.Status != "ok" {
 		t.Fatalf("status = %q, want ok. result: %+v", r.Status, r)
 	}
-	if r.Ranges != 3 || r.Resolved != 4 {
+	if r.Ranges != 3 || r.ArtistsDone != 4 {
 		t.Fatalf("counts = %+v", r)
 	}
 
@@ -192,8 +214,57 @@ func TestSync_UnresolvedArtistsCountButDontBlock(t *testing.T) {
 	if r.Status != "partial" {
 		t.Fatalf("status = %q, want partial", r.Status)
 	}
-	if r.Resolved != 1 || r.Unresolved != 1 {
+	if r.ArtistsDone != 1 || r.Unresolved != 1 {
 		t.Fatalf("counts = %+v", r)
+	}
+}
+
+func TestSync_TopTracks_CreatesCatalogAndSignals(t *testing.T) {
+	conn := newDB(t)
+	sp := &fakeSpotify{
+		byRange: map[spotify.TopTimeRange][]spotify.TopArtist{
+			spotify.TopRangeShort: {}, spotify.TopRangeMedium: {}, spotify.TopRangeLong: {},
+		},
+		tracksByRange: map[spotify.TopTimeRange][]spotify.TopTrack{
+			spotify.TopRangeShort: {
+				{SpotifyID: "sp-t1", Name: "Track One", DurationMs: 240000, ISRC: "US-A",
+					AlbumID: "sp-al1", AlbumName: "Album", ArtistID: "sp-ar1", ArtistName: "Artist", Rank: 1},
+			},
+			spotify.TopRangeMedium: {}, spotify.TopRangeLong: {},
+		},
+	}
+	res := &fakeResolver{
+		tracks: map[string]resolver.Result{
+			"sp-t1": {MBID: "mb-t1", ArtistMBID: "mb-ar1", ArtistName: "Artist",
+				ReleaseGroupID: "mb-rg1", Title: "Track One"},
+		},
+	}
+	svc := newSvc(t, conn, sp, res)
+
+	r, err := svc.Sync(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.TracksDone != 1 {
+		t.Fatalf("tracks_done = %d, want 1. result: %+v", r.TracksDone, r)
+	}
+
+	var n int
+	conn.QueryRow(`SELECT COUNT(*) FROM tracks WHERE mbid='mb-t1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("tracks row = %d, want 1", n)
+	}
+	conn.QueryRow(`SELECT COUNT(*) FROM albums WHERE mbid='mb-rg1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("albums row = %d, want 1", n)
+	}
+	conn.QueryRow(`SELECT COUNT(*) FROM signals WHERE subject_type='track' AND subject_id='mb-t1' AND kind='top_rank'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("top_rank track signal = %d, want 1", n)
+	}
+	conn.QueryRow(`SELECT COUNT(*) FROM top_snapshots WHERE kind='track' AND subject_mbid='mb-t1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("top_snapshots track = %d, want 1", n)
 	}
 }
 

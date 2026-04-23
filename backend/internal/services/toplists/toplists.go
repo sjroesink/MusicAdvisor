@@ -42,12 +42,15 @@ type TokenProvider interface {
 // SpotifyClient is the slice of *spotify.Client we depend on.
 type SpotifyClient interface {
 	FetchTopArtists(ctx context.Context, accessToken string, tr spotify.TopTimeRange) ([]spotify.TopArtist, error)
+	FetchTopTracks(ctx context.Context, accessToken string, tr spotify.TopTimeRange) ([]spotify.TopTrack, error)
 	RefreshToken(ctx context.Context, refreshToken string) (spotify.TokenSet, error)
 }
 
-// Resolver is the minimal surface needed to map a top artist to an MBID.
+// Resolver is the minimal surface needed to map top items to MBIDs.
 type Resolver interface {
 	ResolveArtistByName(ctx context.Context, spotifyID, name string) (resolver.Result, error)
+	ResolveTrack(ctx context.Context, spotifyID, isrc string) (resolver.Result, error)
+	ResolveAlbum(ctx context.Context, spotifyID, upc string) (resolver.Result, error)
 }
 
 type Service struct {
@@ -79,14 +82,16 @@ func New(
 
 // RunResult summarizes one top-lists sync.
 type RunResult struct {
-	RunID        int64
-	Status       string // "ok" | "skipped" | "partial" | "failed"
-	Ranges       int    // how many ranges were actually fetched this run
-	ArtistsSeen  int    // total top artists iterated across ranges
-	Resolved     int    // had an MBID and were snapshotted+signalled
-	Unresolved   int
-	Errors       int
-	DurationMs   int64
+	RunID         int64
+	Status        string // "ok" | "skipped" | "partial" | "failed"
+	Ranges        int    // how many ranges were actually fetched this run
+	ArtistsSeen   int
+	TracksSeen    int
+	ArtistsDone   int // artists that were snapshotted+signalled
+	TracksDone    int
+	Unresolved    int
+	Errors        int
+	DurationMs    int64
 	SkippedReason string // populated when Status == "skipped"
 }
 
@@ -141,19 +146,31 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 	for _, tr := range []spotify.TopTimeRange{
 		spotify.TopRangeShort, spotify.TopRangeMedium, spotify.TopRangeLong,
 	} {
+		mult := rangeWeightMult[tr]
+
 		s.logger.Info("fetching top artists", "user_id", userID, "range", tr)
 		artists, err := s.spotify.FetchTopArtists(ctx, accessToken, tr)
 		if err != nil {
 			s.logger.Warn("fetch top artists failed", "user_id", userID, "range", tr, "err", err)
 			result.Errors++
-			continue
+		} else {
+			result.Ranges++
+			result.ArtistsSeen += len(artists)
+			for _, a := range artists {
+				s.resolveOneArtist(ctx, userID, a, tr, mult, snapshotAt, &result)
+			}
 		}
-		result.Ranges++
-		result.ArtistsSeen += len(artists)
 
-		mult := rangeWeightMult[tr]
-		for _, a := range artists {
-			s.resolveOne(ctx, userID, a, tr, mult, snapshotAt, &result)
+		s.logger.Info("fetching top tracks", "user_id", userID, "range", tr)
+		tracks, err := s.spotify.FetchTopTracks(ctx, accessToken, tr)
+		if err != nil {
+			s.logger.Warn("fetch top tracks failed", "user_id", userID, "range", tr, "err", err)
+			result.Errors++
+		} else {
+			result.TracksSeen += len(tracks)
+			for _, t := range tracks {
+				s.resolveOneTrack(ctx, userID, t, tr, mult, snapshotAt, &result)
+			}
 		}
 	}
 
@@ -166,19 +183,21 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 	}
 
 	finished := s.now().UTC()
-	s.finishRun(ctx, runID, status, result.Resolved, "", finished)
+	s.finishRun(ctx, runID, status, result.ArtistsDone+result.TracksDone, "", finished)
 	result.Status = status
 	result.DurationMs = finished.Sub(started).Milliseconds()
 	s.logger.Info("toplists sync finished",
 		"user_id", userID, "status", status,
-		"ranges", result.Ranges, "artists_seen", result.ArtistsSeen,
-		"resolved", result.Resolved, "unresolved", result.Unresolved,
-		"errors", result.Errors, "duration_s", result.DurationMs/1000,
+		"ranges", result.Ranges,
+		"artists_seen", result.ArtistsSeen, "artists_done", result.ArtistsDone,
+		"tracks_seen", result.TracksSeen, "tracks_done", result.TracksDone,
+		"unresolved", result.Unresolved, "errors", result.Errors,
+		"duration_s", result.DurationMs/1000,
 	)
 	return result, nil
 }
 
-func (s *Service) resolveOne(ctx context.Context, userID string, a spotify.TopArtist,
+func (s *Service) resolveOneArtist(ctx context.Context, userID string, a spotify.TopArtist,
 	tr spotify.TopTimeRange, mult float64, snapshotAt time.Time, r *RunResult) {
 
 	res, err := s.resolver.ResolveArtistByName(ctx, a.SpotifyID, a.Name)
@@ -196,7 +215,7 @@ func (s *Service) resolveOne(ctx context.Context, userID string, a spotify.TopAr
 		r.Errors++
 		return
 	}
-	if err := s.insertSnapshot(ctx, userID, string(tr), a.Rank, res.MBID, snapshotAt); err != nil {
+	if err := s.insertSnapshot(ctx, userID, "artist", string(tr), a.Rank, res.MBID, snapshotAt); err != nil {
 		r.Errors++
 		return
 	}
@@ -214,10 +233,94 @@ func (s *Service) resolveOne(ctx context.Context, userID string, a spotify.TopAr
 		r.Errors++
 		return
 	}
-	r.Resolved++
+	r.ArtistsDone++
 	s.logger.Debug("top artist scored",
 		"range", tr, "rank", a.Rank, "mbid", res.MBID, "name", a.Name, "weight", weight,
 	)
+}
+
+// resolveOneTrack resolves a top track to its MBID via ISRC. The track's
+// album and artist get placeholder catalog rows if the resolver didn't
+// already supply them — this keeps FK constraints on tracks happy and
+// gives propagation a path to the artist_affinity table.
+func (s *Service) resolveOneTrack(ctx context.Context, userID string, t spotify.TopTrack,
+	tr spotify.TopTimeRange, mult float64, snapshotAt time.Time, r *RunResult) {
+
+	res, err := s.resolver.ResolveTrack(ctx, t.SpotifyID, t.ISRC)
+	if errors.Is(err, resolver.ErrUnresolved) {
+		r.Unresolved++
+		return
+	}
+	if err != nil {
+		s.logger.Warn("resolve top track failed", "spotify_id", t.SpotifyID, "err", err)
+		r.Errors++
+		return
+	}
+
+	// Ensure the track's artist row exists before the track FK fires. For
+	// tracks with an ArtistMBID in the resolver result we have an MBID; for
+	// artists that only came from Spotify we fall back to the placeholder
+	// scheme library sync uses ("sp:<spotify_id>").
+	artistMBID := res.ArtistMBID
+	artistName := firstNonEmpty(res.ArtistName, t.ArtistName)
+	if artistMBID == "" && t.ArtistID != "" {
+		artistMBID = "sp:" + t.ArtistID
+	}
+	if artistMBID != "" && artistName != "" {
+		if err := s.upsertArtist(ctx, artistMBID, t.ArtistID, artistName); err != nil {
+			r.Errors++
+			return
+		}
+	}
+
+	// Album placeholder so tracks.album_mbid FK is satisfied. The album
+	// MBID from resolver-of-track is a release-group ID.
+	albumMBID := res.ReleaseGroupID
+	if albumMBID == "" && t.AlbumID != "" {
+		albumMBID = "sp:" + t.AlbumID
+	}
+	if albumMBID != "" {
+		if err := s.upsertAlbumPlaceholder(ctx, albumMBID, t.AlbumID, t.AlbumName, artistMBID); err != nil {
+			r.Errors++
+			return
+		}
+	}
+
+	if err := s.upsertTrack(ctx, res.MBID, t.SpotifyID, t.Name, t.DurationMs, albumMBID, artistMBID); err != nil {
+		r.Errors++
+		return
+	}
+	if err := s.insertSnapshot(ctx, userID, "track", string(tr), t.Rank, res.MBID, snapshotAt); err != nil {
+		r.Errors++
+		return
+	}
+	weight := topRankWeight(t.Rank, mult)
+	if err := s.signals.Append(ctx, signal.Event{
+		UserID:      userID,
+		Kind:        signal.TopRank,
+		SubjectType: signal.SubjectTrack,
+		SubjectID:   res.MBID,
+		Source:      signal.SourceTop,
+		Weight:      weight,
+		Context:     fmt.Sprintf(`{"range":%q,"rank":%d}`, string(tr), t.Rank),
+		Timestamp:   snapshotAt,
+	}); err != nil {
+		r.Errors++
+		return
+	}
+	r.TracksDone++
+	s.logger.Debug("top track scored",
+		"range", tr, "rank", t.Rank, "mbid", res.MBID, "title", t.Name, "weight", weight,
+	)
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // topRankWeight implements spec §4.4: 2.0 × (1 - rank/50) × range_mult.
@@ -284,11 +387,43 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 	return err
 }
 
-func (s *Service) insertSnapshot(ctx context.Context, userID, timeRange string, rank int, mbid string, snapshotAt time.Time) error {
+func (s *Service) insertSnapshot(ctx context.Context, userID, kind, timeRange string, rank int, mbid string, snapshotAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO top_snapshots (user_id, kind, time_range, rank, subject_mbid, snapshot_at)
-		VALUES (?, 'artist', ?, ?, ?, ?)
-	`, userID, timeRange, rank, mbid, snapshotAt)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, userID, kind, timeRange, rank, mbid, snapshotAt)
+	return err
+}
+
+func (s *Service) upsertAlbumPlaceholder(ctx context.Context, mbid, spotifyID, title, artistMBID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
+		VALUES (?, ?, ?, ?, 'Album', ?)
+		ON CONFLICT (mbid) DO UPDATE SET
+		  spotify_id          = COALESCE(excluded.spotify_id, albums.spotify_id),
+		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
+		  title               = excluded.title,
+		  updated_at          = excluded.updated_at
+	`, mbid, nullIfEmpty(spotifyID), nullIfEmpty(artistMBID), title, s.now().UTC())
+	return err
+}
+
+func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string, durationMs int, albumMBID, artistMBID string) error {
+	var duration any
+	if durationMs > 0 {
+		duration = durationMs / 1000
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (mbid) DO UPDATE SET
+		  spotify_id   = COALESCE(excluded.spotify_id, tracks.spotify_id),
+		  album_mbid   = COALESCE(excluded.album_mbid, tracks.album_mbid),
+		  artist_mbid  = COALESCE(excluded.artist_mbid, tracks.artist_mbid),
+		  title        = excluded.title,
+		  duration_sec = COALESCE(excluded.duration_sec, tracks.duration_sec),
+		  updated_at   = excluded.updated_at
+	`, mbid, nullIfEmpty(spotifyID), nullIfEmpty(albumMBID), nullIfEmpty(artistMBID), title, duration, s.now().UTC())
 	return err
 }
 
