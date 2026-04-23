@@ -147,18 +147,53 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 		return result, err
 	}
 
+	s.logger.Info("sync started",
+		"user_id", userID,
+		"run_id", runID,
+	)
+
+	gatherStart := s.now()
 	buckets, gatherErr := s.gather(ctx, accessToken)
 	s.rank(buckets)
 	ranked := bucketsByScoreDesc(buckets)
 
+	totalAlbums := 0
+	for _, b := range ranked {
+		totalAlbums += len(b.Albums)
+	}
 	s.logger.Info("sync gathered library",
 		"user_id", userID,
 		"distinct_artists", len(ranked),
+		"total_albums", totalAlbums,
+		"gather_ms", s.now().Sub(gatherStart).Milliseconds(),
 		"gather_error", errText(gatherErr),
 	)
 
-	for _, b := range ranked {
+	for i, b := range ranked {
+		bucketStart := s.now()
+		before := result
+		s.logger.Info("resolving bucket",
+			"user_id", userID,
+			"rank", i+1,
+			"total", len(ranked),
+			"artist", b.Name,
+			"score", b.score,
+			"albums", len(b.Albums),
+			"followed", b.Followed,
+		)
+
 		s.resolveBucket(ctx, userID, b, &result)
+
+		s.logger.Info("bucket resolved",
+			"user_id", userID,
+			"rank", i+1,
+			"artist", b.Name,
+			"artist_added", result.ArtistsAdded-before.ArtistsAdded,
+			"albums_added", result.AlbumsAdded-before.AlbumsAdded,
+			"unresolved", result.Unresolved-before.Unresolved,
+			"errors", result.Errors-before.Errors,
+			"duration_ms", s.now().Sub(bucketStart).Milliseconds(),
+		)
 	}
 
 	status := "ok"
@@ -292,6 +327,12 @@ func (s *Service) resolveBucket(ctx context.Context, userID string, b *artistBuc
 			r.Errors++
 			return
 		}
+		s.logger.Debug("resolved artist",
+			"spotify_id", b.SpotifyID,
+			"mbid", artistMBID,
+			"name", b.Name,
+			"confidence", ares.Confidence,
+		)
 	}
 
 	// Followed artists get a saved_artists row + follow_add signal.
@@ -357,6 +398,12 @@ func (s *Service) resolveOneAlbum(ctx context.Context, userID string, a spotify.
 		return
 	}
 	r.AlbumsAdded++
+	s.logger.Debug("resolved album",
+		"spotify_id", a.SpotifyID,
+		"mbid", res.MBID,
+		"title", firstNonEmpty(res.Title, a.Name),
+		"type", normalizeAlbumType(res.PrimaryType, a.AlbumType),
+	)
 }
 
 // ── catalog upserts (unchanged) ─────────────────────────────────────

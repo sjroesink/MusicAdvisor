@@ -44,6 +44,7 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
+			d.Logger.Info("background sync queued", "user_id", userID)
 			result, err := d.LibrarySync.Sync(ctx, userID)
 			if err != nil {
 				d.Logger.Warn("background sync failed", "user_id", userID, "err", err)
@@ -58,7 +59,7 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 				"tracks_added", result.TracksAdded,
 				"unresolved", result.Unresolved,
 				"errors", result.Errors,
-				"duration_ms", result.DurationMs,
+				"duration_s", result.DurationMs/1000,
 			)
 		}()
 

@@ -12,17 +12,18 @@ import (
 )
 
 type Config struct {
-	BaseURL            string
-	Address            string
-	DatabasePath       string
-	LogLevel           string
-	SessionSecret      []byte
-	SecretKey          []byte
-	SpotifyClientID    string
+	BaseURL             string
+	Address             string
+	DatabasePath        string
+	LogLevel            string
+	LogFormat           string // "text" (human) or "json" (prod)
+	SessionSecret       []byte
+	SecretKey           []byte
+	SpotifyClientID     string
 	SpotifyClientSecret string
-	LastfmAPIKey       string
-	ListenBrainzToken  string
-	UserAgentContact   string
+	LastfmAPIKey        string
+	ListenBrainzToken   string
+	UserAgentContact    string
 }
 
 // Load reads configuration from environment variables. In dev we also pick
@@ -38,6 +39,7 @@ func Load() (Config, error) {
 		Address:             env("MA_ADDRESS", ":8080"),
 		DatabasePath:        env("MA_DATABASE_PATH", "./data/music-advisor.db"),
 		LogLevel:            env("MA_LOG_LEVEL", "info"),
+		LogFormat:           env("MA_LOG_FORMAT", "text"),
 		SpotifyClientID:     os.Getenv("MA_SPOTIFY_CLIENT_ID"),
 		SpotifyClientSecret: os.Getenv("MA_SPOTIFY_CLIENT_SECRET"),
 		LastfmAPIKey:        os.Getenv("MA_LASTFM_API_KEY"),

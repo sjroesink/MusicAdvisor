@@ -39,7 +39,7 @@ func run() error {
 		return err
 	}
 
-	logger := newLogger(cfg.LogLevel)
+	logger := newLogger(cfg.LogLevel, cfg.LogFormat)
 	slog.SetDefault(logger)
 	logger.Info("starting music-advisor",
 		"addr", cfg.Address,
@@ -161,7 +161,7 @@ func healthcheckMain() int {
 	return 0
 }
 
-func newLogger(level string) *slog.Logger {
+func newLogger(level, format string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -173,5 +173,9 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lvl = slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	opts := &slog.HandlerOptions{Level: lvl}
+	if strings.ToLower(format) == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, opts))
 }
