@@ -140,6 +140,7 @@ func run() error {
 		Signals:        sigStore,
 		Hub:            hub,
 		FrontendOKPath: "/",
+		FrontendFSPath: cfg.FrontendPath,
 	})
 
 	srv := &http.Server{

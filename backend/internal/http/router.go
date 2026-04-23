@@ -37,6 +37,7 @@ type Deps struct {
 	Signals        *signal.SQLStore
 	Hub            *sse.Hub
 	FrontendOKPath string
+	FrontendFSPath string // filesystem path to built dist; empty skips static serving
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -110,6 +111,12 @@ func NewRouter(d Deps) http.Handler {
 			}
 		})
 	})
+
+	// Static frontend (single-container deploy). Must be registered after
+	// /api and /healthz so its catch-all doesn't swallow those routes.
+	if fs := handlers.StaticSPA(d.FrontendFSPath, d.Logger); fs != nil {
+		r.Handle("/*", fs)
+	}
 
 	return r
 }

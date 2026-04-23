@@ -9,13 +9,15 @@ services:
     ports:
       - "8080:8080"
     environment:
-      MA_BASE_URL: http://localhost:8080
+      MA_BASE_URL: ${MA_BASE_URL:-http://localhost:8080}
       MA_ADDRESS: ":8080"
       MA_DATABASE_PATH: /data/music-advisor.db
-      MA_LOG_LEVEL: info
-      # Dev-only placeholders — replace in prod / .env
-      # Dev placeholders — override in .env / prod. Each value must be exactly
-      # 32 bytes (raw) or 64 hex chars.
+      MA_FRONTEND_PATH: /app/frontend/dist
+      MA_LOG_LEVEL: ${MA_LOG_LEVEL:-info}
+      MA_LOG_FORMAT: ${MA_LOG_FORMAT:-text}
+      # Each of the two secrets must be exactly 32 bytes (raw) or 64 hex
+      # chars. Replace the dev placeholders before a non-local deploy — the
+      # defaults here are safe to COMMIT but not safe to USE as-is.
       MA_SESSION_SECRET: ${MA_SESSION_SECRET:-01234567890123456789012345678901}
       MA_SECRET_KEY: ${MA_SECRET_KEY:-abcdefghijklmnopqrstuvwxyz012345}
       MA_SPOTIFY_CLIENT_ID: ${MA_SPOTIFY_CLIENT_ID:-}
@@ -29,6 +31,26 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # ── Unraid / Traefik deployment ─────────────────────────────────────
+    # Uncomment and tailor these labels when deploying behind a Traefik
+    # reverse proxy (e.g. on Unraid). The MA_BASE_URL above must match
+    # the public URL — Spotify's OAuth redirect is derived from it.
+    #
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.music-advisor.rule=Host(`music.example.com`)
+    #   - traefik.http.routers.music-advisor.entrypoints=websecure
+    #   - traefik.http.routers.music-advisor.tls.certresolver=letsencrypt
+    #   - traefik.http.services.music-advisor.loadbalancer.server.port=8080
+    #   # SSE needs buffering disabled; Traefik's default is already
+    #   # pass-through for text/event-stream, but if you front this with
+    #   # nginx set proxy_buffering off for /api/feed/stream.
+    # networks:
+    #   - proxy
 
 volumes:
   ma-data:
+
+# networks:
+#   proxy:
+#     external: true

@@ -31,6 +31,7 @@ COPY --from=backend-builder --chown=65532:65532 /out/data /data
 USER nonroot:nonroot
 ENV MA_ADDRESS=":8080"
 ENV MA_DATABASE_PATH="/data/music-advisor.db"
+ENV MA_FRONTEND_PATH="/app/frontend/dist"
 EXPOSE 8080
 VOLUME ["/data"]
 
