@@ -1,0 +1,21 @@
+# Copy to .env and fill in real values.
+
+# Required: 32-byte secrets. Either raw 32 chars or 64 hex chars.
+MA_SESSION_SECRET=
+MA_SECRET_KEY=
+
+# Spotify Developer App (https://developer.spotify.com/dashboard)
+MA_SPOTIFY_CLIENT_ID=
+MA_SPOTIFY_CLIENT_SECRET=
+
+# MusicBrainz requires an identifiable contact in the User-Agent.
+MA_USER_AGENT_CONTACT=you@example.com
+
+# Optional
+MA_LISTENBRAINZ_TOKEN=
+MA_LASTFM_API_KEY=
+MA_LOG_LEVEL=info
+MA_BASE_URL=http://127.0.0.1:5173
+# Note: Spotify no longer accepts `http://localhost` redirect URIs. In dev,
+# use the loopback IP 127.0.0.1 (browser + MA_BASE_URL) so the redirect URI
+# registered with Spotify matches the Origin the browser actually sends.

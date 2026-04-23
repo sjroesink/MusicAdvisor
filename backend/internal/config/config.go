@@ -3,9 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -22,10 +25,14 @@ type Config struct {
 	UserAgentContact   string
 }
 
-// Load reads configuration from environment variables. Returns an aggregate
-// error listing every missing or invalid field so operators see the full set
-// in one pass.
+// Load reads configuration from environment variables. In dev we also pick
+// up .env.local and .env from the working directory (local takes precedence,
+// real OS env still wins over both). Missing files are silently ignored.
+// Returns an aggregate error listing every missing or invalid field so
+// operators see the full set in one pass.
 func Load() (Config, error) {
+	loadDotEnvFiles()
+
 	cfg := Config{
 		BaseURL:             env("MA_BASE_URL", "http://localhost:8080"),
 		Address:             env("MA_ADDRESS", ":8080"),
@@ -56,6 +63,25 @@ func Load() (Config, error) {
 		return Config{}, errors.New("config: " + strings.Join(problems, "; "))
 	}
 	return cfg, nil
+}
+
+// loadDotEnvFiles reads .env.local then .env if present. godotenv.Load does
+// NOT overwrite already-set vars, so the priority becomes:
+//
+//	real OS env > .env.local > .env
+//
+// Any file that doesn't exist is silently skipped. Real parse errors log a
+// warning but don't block startup — operators can always override via env.
+func loadDotEnvFiles() {
+	for _, name := range []string{".env.local", ".env"} {
+		info, err := os.Stat(name)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if err := godotenv.Load(name); err != nil {
+			slog.Warn("config: failed to parse dotenv file", "file", name, "err", err)
+		}
+	}
 }
 
 func env(key, fallback string) string {
