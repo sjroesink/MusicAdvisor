@@ -115,19 +115,18 @@ func (s *Service) createUser(ctx context.Context, tx *sql.Tx) (string, error) {
 	return id, nil
 }
 
-// AccessToken returns a decrypted, non-expired Spotify access token for the
-// user, refreshing via the provided refresh function if necessary. The
-// refresh callback is injected to keep this package free of provider
-// dependencies.
+// AccessToken returns a decrypted, non-expired access token for the user,
+// refreshing via the provided callback if necessary. The callback is passed
+// in to keep this package free of provider dependencies; the signature is
+// kept as an anonymous func so callers match Go's structural interface
+// rules without needing a named type.
 //
 //	refresh(ctx, providerExternalID, currentRefreshToken) -> (newAccess, newRefresh, newExpiresAt, err)
 //
 // Returns ("", err) if there is no account or refresh fails.
-type TokenRefreshFunc func(ctx context.Context, externalID, refreshToken string) (
-	accessToken, refreshToken2 string, expiresAt time.Time, err error,
-)
-
-func (s *Service) AccessToken(ctx context.Context, userID, provider string, refresh TokenRefreshFunc) (string, error) {
+func (s *Service) AccessToken(ctx context.Context, userID, provider string,
+	refresh func(ctx context.Context, externalID, refreshToken string) (string, string, time.Time, error),
+) (string, error) {
 	var (
 		externalID        string
 		accessTokenEnc    []byte

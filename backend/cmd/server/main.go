@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
+	ossignal "os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -15,7 +15,11 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/config"
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
+	"github.com/sjroesink/music-advisor/backend/internal/services/library"
+	sigsvc "github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
@@ -56,7 +60,6 @@ func run() error {
 
 	sessions := auth.NewSessionStore(database)
 	users := user.NewService(database, cipher)
-
 	cookieCfg := auth.CookieFromBaseURL(cfg.BaseURL)
 
 	spotifyClient, err := spotify.NewClient(spotify.Config{
@@ -66,12 +69,30 @@ func run() error {
 	})
 	if err != nil {
 		if errors.Is(err, spotify.ErrNotConfigured) {
-			logger.Warn("spotify not configured; login routes will return 503",
+			logger.Warn("spotify not configured; login and sync routes return 503",
 				"hint", "set MA_SPOTIFY_CLIENT_ID and MA_SPOTIFY_CLIENT_SECRET")
 			spotifyClient = nil
 		} else {
 			return err
 		}
+	}
+
+	// MusicBrainz + resolver + library sync — only when both Spotify and a
+	// User-Agent contact are configured. MB rejects anonymous clients, so
+	// skipping the sync service entirely is the honest fallback.
+	var librarySync *library.Service
+	if spotifyClient != nil && cfg.UserAgentContact != "" {
+		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
+			Contact: cfg.UserAgentContact,
+		})
+		if err != nil {
+			return err
+		}
+		resolverSvc := resolver.New(database, mbClient)
+		sigStore := sigsvc.NewSQLStore(database)
+		librarySync = library.New(database, users, spotifyClient, resolverSvc, sigStore, logger)
+	} else if cfg.UserAgentContact == "" {
+		logger.Warn("library sync disabled: MA_USER_AGENT_CONTACT is required by MusicBrainz")
 	}
 
 	handler := mahttp.NewRouter(mahttp.Deps{
@@ -81,6 +102,7 @@ func run() error {
 		CookieCfg:      cookieCfg,
 		Users:          users,
 		Spotify:        spotifyClient,
+		LibrarySync:    librarySync,
 		FrontendOKPath: "/",
 	})
 
@@ -92,7 +114,7 @@ func run() error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	rootCtx, stop := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)

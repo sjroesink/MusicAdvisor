@@ -12,6 +12,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/http/handlers"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
+	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
@@ -21,8 +22,9 @@ type Deps struct {
 	Sessions       *auth.SessionStore
 	CookieCfg      auth.CookieConfig
 	Users          *user.Service
-	Spotify        *spotify.Client // nil when creds are missing; login routes return 503
-	FrontendOKPath string          // redirect target after successful login (e.g. "/")
+	Spotify        *spotify.Client
+	LibrarySync    *library.Service
+	FrontendOKPath string
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -49,10 +51,17 @@ func NewRouter(d Deps) http.Handler {
 		api.Get("/auth/spotify/callback", handlers.SpotifyCallback(spotifyDeps))
 		api.Post("/auth/logout", handlers.Logout(d.Sessions, d.CookieCfg))
 
-		// Authenticated subtree.
 		api.Group(func(authed chi.Router) {
 			authed.Use(auth.RequireAuth(d.Sessions, d.CookieCfg))
 			authed.Get("/me", handlers.Me(d.DB, d.Users, d.Logger))
+
+			syncDeps := handlers.SyncDeps{
+				DB:          d.DB,
+				Logger:      d.Logger,
+				LibrarySync: d.LibrarySync,
+			}
+			authed.Post("/sync/trigger", handlers.TriggerSync(syncDeps))
+			authed.Get("/sync/runs", handlers.ListSyncRuns(syncDeps))
 		})
 	})
 
