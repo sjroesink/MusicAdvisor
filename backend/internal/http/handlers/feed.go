@@ -7,12 +7,24 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
+	"github.com/sjroesink/music-advisor/backend/internal/services/discover"
 )
+
+// discoverSources is the ordered list of candidate sources the Discover
+// section merges. Order matters only for tie-breaking within equal scores
+// — normally raw_score DESC decides the winner.
+var discoverSources = []string{
+	discover.SourceLBSimilar,
+	discover.SourceMBArtistRel,
+	discover.SourceMBSameLabel,
+	discover.SourceLastfmSim,
+}
 
 type FeedDeps struct {
 	DB     *sql.DB
@@ -94,13 +106,13 @@ func Feed(d FeedDeps) http.HandlerFunc {
 		}
 		resp.NewReleases = newReleases
 
-		discover, err := readCards(r.Context(), d.DB, userID, "listenbrainz")
+		discoverCards, err := readDiscoverMerged(r.Context(), d.DB, userID, discoverSources)
 		if err != nil {
 			d.Logger.Error("feed: discover", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal", "could not load feed")
 			return
 		}
-		resp.Discover = discover
+		resp.Discover = discoverCards
 
 		ratings, err := readRatings(r.Context(), d.DB, userID)
 		if err != nil {
@@ -247,6 +259,83 @@ func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCa
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// readDiscoverMerged pulls every non-expired candidate from the given
+// sources and collapses duplicate (subject_type, subject_id) pairs into a
+// single card. The winner is the row with the highest raw_score; the
+// other sources' names go into the returned card's Sources[]. Merging
+// is cheap — we hit the index once per source and build the result in-
+// memory, bounded at 50 distinct subjects.
+func readDiscoverMerged(ctx context.Context, db *sql.DB, userID string, sources []string) ([]FeedCard, error) {
+	type key struct{ t, id string }
+	// Per-subject aggregator — holds the best-scoring row plus the union
+	// of sources seen. Keep insertion order via `order`.
+	type agg struct {
+		card    FeedCard
+		sources []string
+		seen    map[string]bool
+	}
+	subjects := map[key]*agg{}
+	var order []key
+
+	for _, src := range sources {
+		cards, err := readCards(ctx, db, userID, src)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cards {
+			k := key{t: c.SubjectType, id: c.ID}
+			existing, ok := subjects[k]
+			if !ok {
+				existing = &agg{
+					card:    c,
+					sources: []string{src},
+					seen:    map[string]bool{src: true},
+				}
+				subjects[k] = existing
+				order = append(order, k)
+				continue
+			}
+			if !existing.seen[src] {
+				existing.seen[src] = true
+				existing.sources = append(existing.sources, src)
+			}
+			// Keep whichever row scored highest — that's "the best reason
+			// we surfaced this release" for the representative card.
+			if c.Score > existing.card.Score {
+				c.Sources = existing.sources
+				existing.card = c
+			}
+		}
+	}
+
+	// Sort by score DESC (stable on insertion order to keep dedup
+	// deterministic for tests).
+	type scored struct {
+		key  key
+		item *agg
+	}
+	all := make([]scored, 0, len(order))
+	for _, k := range order {
+		all = append(all, scored{k, subjects[k]})
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].item.card.Score > all[j].item.card.Score
+	})
+
+	out := make([]FeedCard, 0, len(all))
+	for _, s := range all {
+		card := s.item.card
+		if len(s.item.sources) > 1 {
+			card.Sources = append([]string(nil), s.item.sources...)
+		}
+		out = append(out, card)
+		if len(out) >= 50 {
+			break
+		}
+	}
+	return out, nil
 }
 
 // splitReleaseDate turns "2026-04-18" into (2026, "Apr 18"). Accepts the

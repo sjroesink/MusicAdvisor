@@ -113,6 +113,48 @@ func TestFeed_SurfacesCandidatesInScoreOrder(t *testing.T) {
 	}
 }
 
+func TestFeed_MergesDuplicateDiscoverSources(t *testing.T) {
+	h, userID := authedFeed(t)
+	db := h.DB()
+	db.Exec(`INSERT INTO artists (mbid, name) VALUES ('ar-d','Dup Artist')`)
+	db.Exec(`INSERT INTO albums (mbid, primary_artist_mbid, title, type, release_date)
+	         VALUES ('al-dup','ar-d','Shared','Album','2026-04-10')`)
+	// Same release hits via lb_similar (high score), mb_artist_rels (mid),
+	// and lastfm_similar (low). Should collapse into one card with all
+	// three sources listed.
+	db.Exec(`INSERT INTO discover_candidates
+	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
+	         VALUES (?, 'album', 'al-dup', 'listenbrainz', 0.9, '{"via_artist_name":"LB Seed"}', ?)`,
+		userID, time.Now().Add(time.Hour))
+	db.Exec(`INSERT INTO discover_candidates
+	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
+	         VALUES (?, 'album', 'al-dup', 'mb_artist_rels', 0.6, '{"via_artist_name":"MB Seed","relation":"collaboration"}', ?)`,
+		userID, time.Now().Add(time.Hour))
+	db.Exec(`INSERT INTO discover_candidates
+	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
+	         VALUES (?, 'album', 'al-dup', 'lastfm_similar', 0.4, '{"via_artist_name":"LF Seed"}', ?)`,
+		userID, time.Now().Add(time.Hour))
+
+	resp, _ := h.client.Get(h.server.URL + "/api/feed")
+	defer resp.Body.Close()
+	var got handlers.FeedResponse
+	json.NewDecoder(resp.Body).Decode(&got)
+
+	if len(got.Discover) != 1 {
+		t.Fatalf("discover = %d, want 1 (deduped). cards=%+v", len(got.Discover), got.Discover)
+	}
+	card := got.Discover[0]
+	if card.ID != "al-dup" {
+		t.Fatalf("id = %q, want al-dup", card.ID)
+	}
+	if card.Source != "listenbrainz" {
+		t.Fatalf("primary source = %q, want listenbrainz (highest score)", card.Source)
+	}
+	if len(card.Sources) != 3 {
+		t.Fatalf("sources = %v, want 3 entries", card.Sources)
+	}
+}
+
 func TestFeed_ExcludesExpiredCandidates(t *testing.T) {
 	h, userID := authedFeed(t)
 	db := h.DB()
