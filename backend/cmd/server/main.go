@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/config"
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
+	"github.com/sjroesink/music-advisor/backend/internal/scheduler"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/lastfm"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/listenbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
@@ -183,6 +185,25 @@ func run() error {
 	rootCtx, stop := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Build per-phase scheduler jobs from the services we actually have.
+	// A nil service contributes no job; the scheduler ignores an empty
+	// job slice. Services keep their own min-interval gate so duplicate
+	// ticks are cheap skips.
+	sched := buildScheduler(
+		database, logger,
+		librarySync, topListsSync, listeningSvc,
+		releasesSvc, lbSimilarSvc, mbRelsSvc, sameLabelSvc, lfSimilarSvc,
+	)
+	schedDone := make(chan struct{})
+	if sched != nil {
+		go func() {
+			defer close(schedDone)
+			sched.Run(rootCtx)
+		}()
+	} else {
+		close(schedDone)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("http listening", "addr", cfg.Address)
@@ -203,8 +224,110 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
+	// Wait for the scheduler's current tick to drain. rootCtx already got
+	// cancelled by NotifyContext's stop, so sched.Run will return on its
+	// own. Give it a reasonable ceiling so a stuck sync can't block
+	// shutdown forever.
+	select {
+	case <-schedDone:
+	case <-time.After(15 * time.Second):
+		logger.Warn("scheduler: shutdown wait timed out")
+	}
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// buildScheduler constructs the job list from whichever services booted
+// successfully. Passing a nil service simply drops its job; the scheduler
+// tolerates an empty list and returns nil itself.
+func buildScheduler(
+	database *sql.DB, logger *slog.Logger,
+	librarySvc *library.Service,
+	topListsSvc *toplists.Service,
+	listeningSvc *listening.Service,
+	releasesSvc *releases.Service,
+	lbSimilarSvc *lbsimilar.Service,
+	mbRelsSvc *mbrels.Service,
+	sameLabelSvc *samelabel.Service,
+	lfSimilarSvc *lfsimilar.Service,
+) *scheduler.Scheduler {
+	var jobs []scheduler.Job
+	if librarySvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "library", Interval: 24 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := librarySvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if topListsSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "toplists", Interval: 24 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := topListsSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if listeningSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "listening", Interval: 20 * time.Minute,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := listeningSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if releasesSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "mb-new-releases", Interval: 6 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := releasesSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if lbSimilarSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "lb-similar", Interval: 30 * time.Minute,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := lbSimilarSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if mbRelsSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "mb-artist-rels", Interval: 6 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := mbRelsSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if sameLabelSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "mb-same-label", Interval: 6 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := sameLabelSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if lfSimilarSvc != nil {
+		jobs = append(jobs, scheduler.Job{
+			Name: "lastfm-similar", Interval: 1 * time.Hour,
+			Run: func(ctx context.Context, userID string) error {
+				_, err := lfSimilarSvc.Sync(ctx, userID)
+				return err
+			},
+		})
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+	return scheduler.New(database, logger, jobs...)
 }
 
 // rebuildAffinityMain is a one-shot migration: pre-Phase-4 syncs wrote raw
