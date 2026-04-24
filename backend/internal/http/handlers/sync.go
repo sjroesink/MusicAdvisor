@@ -13,6 +13,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
+	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/sse"
@@ -31,6 +32,7 @@ type SyncDeps struct {
 	Listening   *listening.Service
 	Releases    *releases.Service
 	LBSimilar   *lbsimilar.Service
+	MBRels      *mbrels.Service
 	Hub         *sse.Hub
 }
 
@@ -153,6 +155,29 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 						"errors", relResult.Errors,
 						"duration_s", relResult.DurationMs/1000,
 						"skipped_reason", relResult.SkippedReason,
+					)
+				}
+			}
+
+			if d.MBRels != nil {
+				d.emit(userID, "mb-artist-rels", "started")
+				mbResult, err := d.MBRels.Sync(ctx, userID)
+				if err != nil {
+					d.emit(userID, "mb-artist-rels", "failed")
+					d.Logger.Warn("background mb-artist-rels sync failed", "user_id", userID, "err", err)
+				} else {
+					d.emit(userID, "mb-artist-rels", mbResult.Status)
+					d.Logger.Info("mb-artist-rels sync finished",
+						"user_id", userID,
+						"run_id", mbResult.RunID,
+						"status", mbResult.Status,
+						"seeds", mbResult.SeedsScanned,
+						"related", mbResult.RelatedDiscovered,
+						"new", mbResult.CandidatesNew,
+						"updated", mbResult.CandidatesUpdated,
+						"errors", mbResult.Errors,
+						"duration_s", mbResult.DurationMs/1000,
+						"skipped_reason", mbResult.SkippedReason,
 					)
 				}
 			}

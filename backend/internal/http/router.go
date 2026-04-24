@@ -15,6 +15,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
+	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
@@ -34,6 +35,7 @@ type Deps struct {
 	Listening      *listening.Service
 	Releases       *releases.Service
 	LBSimilar      *lbsimilar.Service
+	MBRels         *mbrels.Service
 	Signals        *signal.SQLStore
 	Hub            *sse.Hub
 	FrontendOKPath string
@@ -82,6 +84,7 @@ func NewRouter(d Deps) http.Handler {
 					Listening:   d.Listening,
 					Releases:    d.Releases,
 					LBSimilar:   d.LBSimilar,
+					MBRels:      d.MBRels,
 					Hub:         d.Hub,
 				}
 				authed.Post("/sync/trigger", handlers.TriggerSync(syncDeps))
