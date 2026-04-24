@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjroesink/music-advisor/backend/internal/providers/listenbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
+	"github.com/sjroesink/music-advisor/backend/internal/services/discover"
 )
 
 const (
@@ -44,9 +45,11 @@ const (
 	ReleasesPerSimilar = 2
 	// MinSimilarityScore filters weak LB matches.
 	MinSimilarityScore = 0.0
-	// CandidateTTL matches the MB-releases TTL (spec §5.3).
-	CandidateTTL = 7 * 24 * time.Hour
 )
+
+// CandidateTTL is resolved via the discover package so the policy lives
+// in one place (spec §5.3 / §11).
+var CandidateTTL = discover.TTLForSource(discover.SourceLBSimilar)
 
 type LBClient interface {
 	FetchSimilarArtists(ctx context.Context, artistMBID string, limit int) ([]listenbrainz.SimilarArtist, error)

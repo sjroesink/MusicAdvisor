@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
+	"github.com/sjroesink/music-advisor/backend/internal/services/discover"
 )
 
 const (
@@ -43,10 +44,12 @@ const (
 	// signals (top_rank, library_add, heard_good) have raised affinity
 	// above this floor.
 	MinAffinityScore = 2.0
-	// CandidateTTL is how long a discover_candidate sticks around before
-	// the next pass is allowed to prune it.
-	CandidateTTL = 7 * 24 * time.Hour
 )
+
+// CandidateTTL is how long a discover_candidate sticks around before
+// the next pass is allowed to prune it. Resolved via the discover
+// package so the policy lives in one place.
+var CandidateTTL = discover.TTLForSource(discover.SourceMBReleases)
 
 type MBClient interface {
 	BrowseReleaseGroupsByArtist(ctx context.Context, artistMBID string, limit int) ([]musicbrainz.ReleaseGroup, error)
