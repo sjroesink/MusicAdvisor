@@ -15,11 +15,13 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/config"
 	"github.com/sjroesink/music-advisor/backend/internal/db"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/lastfm"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/listenbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
+	"github.com/sjroesink/music-advisor/backend/internal/services/lfsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
@@ -106,6 +108,7 @@ func run() error {
 	var lbSimilarSvc *lbsimilar.Service
 	var mbRelsSvc *mbrels.Service
 	var sameLabelSvc *samelabel.Service
+	var lfSimilarSvc *lfsimilar.Service
 	if spotifyClient != nil && cfg.UserAgentContact != "" {
 		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
 			Contact:       cfg.UserAgentContact,
@@ -129,6 +132,21 @@ func run() error {
 		lbSimilarSvc = lbsimilar.New(database, lbClient, mbClient, logger)
 		mbRelsSvc = mbrels.New(database, mbClient, logger)
 		sameLabelSvc = samelabel.New(database, mbClient, logger)
+
+		// Last.fm is optional — only build the similar-artists service if
+		// an API key is configured.
+		if cfg.LastfmAPIKey != "" {
+			lfClient, err := lastfm.NewClient(lastfm.Config{
+				APIKey:  cfg.LastfmAPIKey,
+				Contact: cfg.UserAgentContact,
+			})
+			if err != nil {
+				return err
+			}
+			lfSimilarSvc = lfsimilar.New(database, lfClient, mbClient, logger)
+		} else {
+			logger.Info("lastfm-similar disabled: MA_LASTFM_API_KEY is empty")
+		}
 	} else if cfg.UserAgentContact == "" {
 		logger.Warn("library, toplists, listening, releases & lb-similar sync disabled: MA_USER_AGENT_CONTACT is required")
 	}
@@ -147,6 +165,7 @@ func run() error {
 		LBSimilar:      lbSimilarSvc,
 		MBRels:         mbRelsSvc,
 		SameLabel:      sameLabelSvc,
+		LFSimilar:      lfSimilarSvc,
 		Signals:        sigStore,
 		Hub:            hub,
 		FrontendOKPath: "/",

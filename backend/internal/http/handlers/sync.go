@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
 	"github.com/sjroesink/music-advisor/backend/internal/services/lbsimilar"
+	"github.com/sjroesink/music-advisor/backend/internal/services/lfsimilar"
 	"github.com/sjroesink/music-advisor/backend/internal/services/library"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
@@ -35,6 +36,7 @@ type SyncDeps struct {
 	LBSimilar   *lbsimilar.Service
 	MBRels      *mbrels.Service
 	SameLabel   *samelabel.Service
+	LFSimilar   *lfsimilar.Service
 	Hub         *sse.Hub
 }
 
@@ -226,6 +228,29 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 						"errors", lbResult.Errors,
 						"duration_s", lbResult.DurationMs/1000,
 						"skipped_reason", lbResult.SkippedReason,
+					)
+				}
+			}
+
+			if d.LFSimilar != nil {
+				d.emit(userID, "lastfm-similar", "started")
+				lfResult, err := d.LFSimilar.Sync(ctx, userID)
+				if err != nil {
+					d.emit(userID, "lastfm-similar", "failed")
+					d.Logger.Warn("background lastfm-similar sync failed", "user_id", userID, "err", err)
+				} else {
+					d.emit(userID, "lastfm-similar", lfResult.Status)
+					d.Logger.Info("lastfm-similar sync finished",
+						"user_id", userID,
+						"run_id", lfResult.RunID,
+						"status", lfResult.Status,
+						"seeds", lfResult.SeedsScanned,
+						"similar", lfResult.SimilarDiscovered,
+						"new", lfResult.CandidatesNew,
+						"updated", lfResult.CandidatesUpdated,
+						"errors", lfResult.Errors,
+						"duration_s", lfResult.DurationMs/1000,
+						"skipped_reason", lfResult.SkippedReason,
 					)
 				}
 			}
