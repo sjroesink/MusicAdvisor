@@ -24,6 +24,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
+	"github.com/sjroesink/music-advisor/backend/internal/services/samelabel"
 	sigsvc "github.com/sjroesink/music-advisor/backend/internal/services/signal"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
@@ -104,6 +105,7 @@ func run() error {
 	var releasesSvc *releases.Service
 	var lbSimilarSvc *lbsimilar.Service
 	var mbRelsSvc *mbrels.Service
+	var sameLabelSvc *samelabel.Service
 	if spotifyClient != nil && cfg.UserAgentContact != "" {
 		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
 			Contact:       cfg.UserAgentContact,
@@ -126,6 +128,7 @@ func run() error {
 		releasesSvc = releases.New(database, mbClient, logger)
 		lbSimilarSvc = lbsimilar.New(database, lbClient, mbClient, logger)
 		mbRelsSvc = mbrels.New(database, mbClient, logger)
+		sameLabelSvc = samelabel.New(database, mbClient, logger)
 	} else if cfg.UserAgentContact == "" {
 		logger.Warn("library, toplists, listening, releases & lb-similar sync disabled: MA_USER_AGENT_CONTACT is required")
 	}
@@ -143,6 +146,7 @@ func run() error {
 		Releases:       releasesSvc,
 		LBSimilar:      lbSimilarSvc,
 		MBRels:         mbRelsSvc,
+		SameLabel:      sameLabelSvc,
 		Signals:        sigStore,
 		Hub:            hub,
 		FrontendOKPath: "/",

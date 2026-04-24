@@ -15,6 +15,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
 	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
 	"github.com/sjroesink/music-advisor/backend/internal/services/releases"
+	"github.com/sjroesink/music-advisor/backend/internal/services/samelabel"
 	"github.com/sjroesink/music-advisor/backend/internal/services/toplists"
 	"github.com/sjroesink/music-advisor/backend/internal/sse"
 )
@@ -33,6 +34,7 @@ type SyncDeps struct {
 	Releases    *releases.Service
 	LBSimilar   *lbsimilar.Service
 	MBRels      *mbrels.Service
+	SameLabel   *samelabel.Service
 	Hub         *sse.Hub
 }
 
@@ -178,6 +180,29 @@ func TriggerSync(d SyncDeps) http.HandlerFunc {
 						"errors", mbResult.Errors,
 						"duration_s", mbResult.DurationMs/1000,
 						"skipped_reason", mbResult.SkippedReason,
+					)
+				}
+			}
+
+			if d.SameLabel != nil {
+				d.emit(userID, "mb-same-label", "started")
+				slResult, err := d.SameLabel.Sync(ctx, userID)
+				if err != nil {
+					d.emit(userID, "mb-same-label", "failed")
+					d.Logger.Warn("background mb-same-label sync failed", "user_id", userID, "err", err)
+				} else {
+					d.emit(userID, "mb-same-label", slResult.Status)
+					d.Logger.Info("mb-same-label sync finished",
+						"user_id", userID,
+						"run_id", slResult.RunID,
+						"status", slResult.Status,
+						"seeds", slResult.SeedsScanned,
+						"labels", slResult.LabelsDiscovered,
+						"new", slResult.CandidatesNew,
+						"updated", slResult.CandidatesUpdated,
+						"errors", slResult.Errors,
+						"duration_s", slResult.DurationMs/1000,
+						"skipped_reason", slResult.SkippedReason,
 					)
 				}
 			}
