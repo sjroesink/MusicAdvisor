@@ -38,6 +38,7 @@ import (
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
+	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
 // TokenProvider decouples the sync from the user service.
@@ -137,6 +138,11 @@ func (s *Service) Sync(ctx context.Context, userID string) (RunResult, error) {
 		func(ctx context.Context, _, refresh string) (string, string, time.Time, error) {
 			ts, err := s.spotify.RefreshToken(ctx, refresh)
 			if err != nil {
+				// Only terminal failures should lock the account; the user
+				// service uses the AsTerminal sentinel to decide.
+				if errors.Is(err, spotify.ErrInvalidGrant) {
+					return "", "", time.Time{}, user.AsTerminal(err)
+				}
 				return "", "", time.Time{}, err
 			}
 			return ts.AccessToken, ts.RefreshToken, ts.ExpiresAt, nil

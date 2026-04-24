@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
@@ -167,10 +168,16 @@ func (s *Service) AccessToken(ctx context.Context, userID, provider string,
 	}
 	newAccess, newRefresh, newExpires, err := refresh(ctx, externalID, string(refreshTok))
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx,
-			`UPDATE external_accounts SET needs_reconnect = 1 WHERE user_id = ? AND provider = ?`,
-			userID, provider,
-		)
+		// Only lock the account for REAL terminal failures — callers wrap
+		// their provider's invalid_grant / equivalent with AsTerminal().
+		// Transient errors (5xx, network blips) propagate without locking
+		// so the next trigger can retry.
+		if errors.Is(err, ErrTerminalRefresh) {
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE external_accounts SET needs_reconnect = 1 WHERE user_id = ? AND provider = ?`,
+				userID, provider,
+			)
+		}
 		return "", err
 	}
 	newAccessEnc, err := s.cipher.Encrypt([]byte(newAccess))
@@ -226,7 +233,24 @@ func (s *Service) IntegrationsByUser(ctx context.Context, userID string) ([]Inte
 var (
 	ErrNoAccount      = errors.New("user: no external account")
 	ErrNeedsReconnect = errors.New("user: account needs reconnect")
+	// ErrTerminalRefresh signals that a refresh-token exchange failed in
+	// a way that is NOT going to fix itself — e.g. the refresh token was
+	// revoked or expired (Spotify's invalid_grant). AccessToken reacts by
+	// setting needs_reconnect=1 only when it sees this sentinel, so a
+	// transient 5xx / network blip doesn't lock an account.
+	ErrTerminalRefresh = errors.New("user: refresh terminal — reconnect required")
 )
+
+// AsTerminal wraps err in ErrTerminalRefresh so AccessToken's caller can
+// signal "lock this account; the refresh token is dead". Returns nil on
+// nil input. Passes err through transparently via %w:%w so errors.Is
+// still matches the original cause.
+func AsTerminal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrTerminalRefresh, err)
+}
 
 func newUserID() (string, error) {
 	b := make([]byte, 16)

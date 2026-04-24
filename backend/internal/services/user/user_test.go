@@ -138,7 +138,7 @@ func TestAccessToken_RefreshesWhenExpired(t *testing.T) {
 	}
 }
 
-func TestAccessToken_MarksReconnectOnRefreshFailure(t *testing.T) {
+func TestAccessToken_TransientRefreshFailureDoesNotLock(t *testing.T) {
 	svc := newSvc(t)
 	id, err := svc.UpsertByExternal(context.Background(), user.ExternalAccount{
 		Provider:       "spotify",
@@ -151,19 +151,59 @@ func TestAccessToken_MarksReconnectOnRefreshFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fail := errors.New("upstream 401")
+	transient := errors.New("upstream 500")
 	_, err = svc.AccessToken(context.Background(), id, "spotify",
 		func(context.Context, string, string) (string, string, time.Time, error) {
-			return "", "", time.Time{}, fail
+			return "", "", time.Time{}, transient
 		})
-	if !errors.Is(err, fail) {
-		t.Fatalf("err = %v, want refresh error", err)
+	if !errors.Is(err, transient) {
+		t.Fatalf("err = %v, want transient", err)
 	}
 
-	// The next call should surface ErrNeedsReconnect rather than retrying.
+	// A second call tries to refresh again — account must NOT be locked.
+	called := false
 	_, err = svc.AccessToken(context.Background(), id, "spotify",
 		func(context.Context, string, string) (string, string, time.Time, error) {
-			t.Fatal("refresh should not run on reconnect-required account")
+			called = true
+			return "", "", time.Time{}, transient
+		})
+	if !called {
+		t.Fatal("refresh should retry after a transient failure")
+	}
+	if errors.Is(err, user.ErrNeedsReconnect) {
+		t.Fatal("transient failure must not lock the account")
+	}
+}
+
+func TestAccessToken_TerminalRefreshLocksAccount(t *testing.T) {
+	svc := newSvc(t)
+	id, err := svc.UpsertByExternal(context.Background(), user.ExternalAccount{
+		Provider:       "spotify",
+		ExternalID:     "sander",
+		AccessToken:    "acc-stale",
+		RefreshToken:   "ref",
+		TokenExpiresAt: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	terminal := errors.New("invalid_grant")
+	_, err = svc.AccessToken(context.Background(), id, "spotify",
+		func(context.Context, string, string) (string, string, time.Time, error) {
+			return "", "", time.Time{}, user.AsTerminal(terminal)
+		})
+	if !errors.Is(err, terminal) {
+		t.Fatalf("err = %v, want the wrapped terminal cause", err)
+	}
+	if !errors.Is(err, user.ErrTerminalRefresh) {
+		t.Fatalf("err = %v, want ErrTerminalRefresh sentinel", err)
+	}
+
+	// Next call must refuse to retry and return ErrNeedsReconnect.
+	_, err = svc.AccessToken(context.Background(), id, "spotify",
+		func(context.Context, string, string) (string, string, time.Time, error) {
+			t.Fatal("refresh should not run once the account is locked")
 			return "", "", time.Time{}, nil
 		})
 	if !errors.Is(err, user.ErrNeedsReconnect) {
