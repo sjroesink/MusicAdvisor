@@ -11,12 +11,11 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	mahttp "github.com/sjroesink/music-advisor/backend/internal/http"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
@@ -37,11 +36,7 @@ func (h *harness) DB() *sql.DB { return h.db }
 func newHarness(t *testing.T, withSpotify bool) *harness {
 	t.Helper()
 
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 
 	key := make([]byte, 32)
 	rand.Read(key)
@@ -76,6 +71,7 @@ func newHarness(t *testing.T, withSpotify bool) *harness {
 		spotifyMock = httptest.NewServer(mux)
 		t.Cleanup(spotifyMock.Close)
 
+		var err error
 		spotifyClient, err = spotify.NewClient(spotify.Config{
 			ClientID:     "id",
 			ClientSecret: "secret",

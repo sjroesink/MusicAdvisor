@@ -6,41 +6,37 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/scheduler"
 )
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "sch.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 	return conn
 }
 
 func seedConnected(t *testing.T, conn *sql.DB, userID string, needsReconnect bool) {
 	t.Helper()
-	if _, err := conn.Exec(`INSERT INTO users(id) VALUES(?)`, userID); err != nil {
+	if _, err := conn.Exec(`INSERT INTO users(id) VALUES($1)`, userID); err != nil {
 		t.Fatal(err)
 	}
 	needs := 0
 	if needsReconnect {
 		needs = 1
 	}
+	zero := []byte{0x00}
 	if _, err := conn.Exec(`
 		INSERT INTO external_accounts
 		  (user_id, provider, external_id, access_token_enc, refresh_token_enc,
 		   needs_reconnect, connected_at)
-		VALUES (?, 'spotify', ?, x'00', x'00', ?, ?)
-	`, userID, userID, needs, time.Now().UTC()); err != nil {
+		VALUES ($1, 'spotify', $2, $3, $3, $4, $5)
+	`, userID, userID, zero, needs, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 }

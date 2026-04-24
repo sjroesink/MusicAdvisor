@@ -425,7 +425,7 @@ func (s *Service) resolveOneAlbum(ctx context.Context, userID string, a spotify.
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id = COALESCE(excluded.spotify_id, artists.spotify_id),
 		  name       = excluded.name,
@@ -445,7 +445,7 @@ func (s *Service) upsertAlbum(ctx context.Context, res resolver.Result, a spotif
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title,
 		                    release_date, type, track_count, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id          = COALESCE(excluded.spotify_id, albums.spotify_id),
 		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
@@ -462,7 +462,7 @@ func (s *Service) upsertAlbum(ctx context.Context, res resolver.Result, a spotif
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, placeholderMBID, spotifyID, title, artistMBID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
-		VALUES (?, ?, ?, ?, 'Album', ?)
+		VALUES ($1, $2, $3, $4, 'Album', $5)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id          = COALESCE(excluded.spotify_id, albums.spotify_id),
 		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
@@ -480,7 +480,7 @@ func (s *Service) upsertAlbumPlaceholder(ctx context.Context, placeholderMBID, s
 func (s *Service) insertSavedArtist(ctx context.Context, userID, artistMBID string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO saved_artists (user_id, artist_mbid, saved_at)
-		VALUES (?, ?, ?)
+		VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING
 	`, userID, artistMBID, s.now().UTC())
 	if err != nil {
@@ -496,7 +496,7 @@ func (s *Service) insertSavedAlbum(ctx context.Context, userID, albumMBID string
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO saved_albums (user_id, album_mbid, saved_at)
-		VALUES (?, ?, ?)
+		VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING
 	`, userID, albumMBID, savedAt)
 	if err != nil {
@@ -509,21 +509,20 @@ func (s *Service) insertSavedAlbum(ctx context.Context, userID, albumMBID string
 // ── sync_runs ───────────────────────────────────────────────────────
 
 func (s *Service) startRun(ctx context.Context, userID, kind string, started time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO sync_runs (user_id, kind, started_at, status)
-		VALUES (?, ?, ?, 'running')
-	`, userID, kind, started)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, 'running')
+		RETURNING id
+	`, userID, kind, started).Scan(&id)
+	return id, err
 }
 
 func (s *Service) finishRun(ctx context.Context, id int64, status string, itemsAdded int, errText string, finished time.Time) {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sync_runs
-		SET status = ?, finished_at = ?, items_added = ?, error = NULLIF(?, '')
-		WHERE id = ?
+		SET status = $1, finished_at = $2, items_added = $3, error = NULLIF($4, '')
+		WHERE id = $5
 	`, status, finished, itemsAdded, errText, id)
 	if err != nil {
 		s.logger.Warn("sync: finishRun update failed", "err", err)

@@ -6,11 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
@@ -81,11 +80,7 @@ func (r *fakeResolver) ResolveAlbum(_ context.Context, spotifyID, _ string) (res
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "top.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 	if _, err := conn.Exec(`INSERT INTO users(id) VALUES('u1')`); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +167,7 @@ func TestSync_FreshSnapshotIsSkipped(t *testing.T) {
 	// Seed a recent snapshot — within MinInterval (12h).
 	if _, err := conn.Exec(`
 		INSERT INTO top_snapshots (user_id, kind, time_range, rank, subject_mbid, snapshot_at)
-		VALUES ('u1','artist','short_term',1,'mb-prior',?)
+		VALUES ('u1','artist','short_term',1,'mb-prior',$1)
 	`, time.Now().UTC().Add(-1*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +283,7 @@ func TestSync_RangeWeightMultipliers(t *testing.T) {
 		t.Helper()
 		var w float64
 		q := `SELECT weight FROM signals WHERE user_id='u1' AND kind='top_rank'
-		      AND subject_id='mb-1' AND context LIKE '%' || ? || '%' LIMIT 1`
+		      AND subject_id='mb-1' AND context LIKE '%' || $1 || '%' LIMIT 1`
 		if err := conn.QueryRow(q, rangeName).Scan(&w); err != nil {
 			t.Fatal(err)
 		}

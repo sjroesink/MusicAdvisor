@@ -116,13 +116,13 @@ func affinityScore(ctx context.Context, db *sql.DB, userID string, subj signal.S
 	var q string
 	switch subj {
 	case signal.SubjectArtist:
-		q = `SELECT score FROM artist_affinity WHERE user_id=? AND artist_mbid=?`
+		q = `SELECT score FROM artist_affinity WHERE user_id=$1 AND artist_mbid=$2`
 	case signal.SubjectAlbum:
-		q = `SELECT score FROM album_affinity WHERE user_id=? AND album_mbid=?`
+		q = `SELECT score FROM album_affinity WHERE user_id=$1 AND album_mbid=$2`
 	case signal.SubjectTrack:
-		q = `SELECT score FROM track_affinity WHERE user_id=? AND track_mbid=?`
+		q = `SELECT score FROM track_affinity WHERE user_id=$1 AND track_mbid=$2`
 	case signal.SubjectLabel:
-		q = `SELECT score FROM label_affinity WHERE user_id=? AND label_mbid=?`
+		q = `SELECT score FROM label_affinity WHERE user_id=$1 AND label_mbid=$2`
 	default:
 		return 0, nil
 	}

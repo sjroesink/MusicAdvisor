@@ -118,7 +118,7 @@ func (s *SQLStore) Append(ctx context.Context, e Event) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO signals (user_id, kind, subject_type, subject_id,
 		                    weight, source, context, ts)
-		VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8)
 	`, e.UserID, string(e.Kind), string(e.SubjectType), e.SubjectID,
 		w, string(e.Source), e.Context, ts); err != nil {
 		return err
@@ -151,7 +151,7 @@ func applyAffinity(ctx context.Context, tx *sql.Tx, userID string, subj SubjectT
 	case SubjectArtist:
 		query = `
 			INSERT INTO artist_affinity (user_id, artist_mbid, score, signal_count, last_signal_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)
+			VALUES ($1, $2, $3, 1, $4, $5)
 			ON CONFLICT (user_id, artist_mbid) DO UPDATE SET
 			  score          = artist_affinity.score + excluded.score,
 			  signal_count   = artist_affinity.signal_count + 1,
@@ -161,7 +161,7 @@ func applyAffinity(ctx context.Context, tx *sql.Tx, userID string, subj SubjectT
 	case SubjectAlbum:
 		query = `
 			INSERT INTO album_affinity (user_id, album_mbid, score, signal_count, last_signal_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)
+			VALUES ($1, $2, $3, 1, $4, $5)
 			ON CONFLICT (user_id, album_mbid) DO UPDATE SET
 			  score          = album_affinity.score + excluded.score,
 			  signal_count   = album_affinity.signal_count + 1,
@@ -171,7 +171,7 @@ func applyAffinity(ctx context.Context, tx *sql.Tx, userID string, subj SubjectT
 	case SubjectTrack:
 		query = `
 			INSERT INTO track_affinity (user_id, track_mbid, score, signal_count, last_signal_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)
+			VALUES ($1, $2, $3, 1, $4, $5)
 			ON CONFLICT (user_id, track_mbid) DO UPDATE SET
 			  score          = track_affinity.score + excluded.score,
 			  signal_count   = track_affinity.signal_count + 1,
@@ -181,7 +181,7 @@ func applyAffinity(ctx context.Context, tx *sql.Tx, userID string, subj SubjectT
 	case SubjectLabel:
 		query = `
 			INSERT INTO label_affinity (user_id, label_mbid, score, signal_count, last_signal_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)
+			VALUES ($1, $2, $3, 1, $4, $5)
 			ON CONFLICT (user_id, label_mbid) DO UPDATE SET
 			  score          = label_affinity.score + excluded.score,
 			  signal_count   = label_affinity.signal_count + 1,
@@ -235,7 +235,7 @@ func propagate(ctx context.Context, tx *sql.Tx, userID string, subj SubjectType,
 func lookupAlbumArtist(ctx context.Context, tx *sql.Tx, albumMBID string) (string, error) {
 	var artistMBID sql.NullString
 	err := tx.QueryRowContext(ctx, `
-		SELECT primary_artist_mbid FROM albums WHERE mbid = ?
+		SELECT primary_artist_mbid FROM albums WHERE mbid = $1
 	`, albumMBID).Scan(&artistMBID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -249,7 +249,7 @@ func lookupAlbumArtist(ctx context.Context, tx *sql.Tx, albumMBID string) (strin
 func lookupTrackParents(ctx context.Context, tx *sql.Tx, trackMBID string) (album, artist string, err error) {
 	var a, ar sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT album_mbid, artist_mbid FROM tracks WHERE mbid = ?
+		SELECT album_mbid, artist_mbid FROM tracks WHERE mbid = $1
 	`, trackMBID).Scan(&a, &ar)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
@@ -264,7 +264,7 @@ func sideTables(ctx context.Context, tx *sql.Tx, userID string, kind Kind, subj 
 	case Dismiss:
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO hides (user_id, subject_type, subject_id, created_at)
-			VALUES (?, ?, ?, ?)
+			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (user_id, subject_type, subject_id) DO UPDATE SET
 			  created_at = excluded.created_at
 		`, userID, string(subj), id, ts)
@@ -276,7 +276,7 @@ func sideTables(ctx context.Context, tx *sql.Tx, userID string, kind Kind, subj 
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO ratings (user_id, subject_type, subject_id, rating, rated_at)
-			VALUES (?, ?, ?, ?, ?)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (user_id, subject_type, subject_id) DO UPDATE SET
 			  rating   = excluded.rating,
 			  rated_at = excluded.rated_at
@@ -306,10 +306,10 @@ func (s *SQLStore) Rebuild(ctx context.Context, userID string) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	for _, q := range []string{
-		`DELETE FROM artist_affinity WHERE user_id = ?`,
-		`DELETE FROM album_affinity  WHERE user_id = ?`,
-		`DELETE FROM track_affinity  WHERE user_id = ?`,
-		`DELETE FROM label_affinity  WHERE user_id = ?`,
+		`DELETE FROM artist_affinity WHERE user_id = $1`,
+		`DELETE FROM album_affinity  WHERE user_id = $1`,
+		`DELETE FROM track_affinity  WHERE user_id = $1`,
+		`DELETE FROM label_affinity  WHERE user_id = $1`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, userID); err != nil {
 			return err
@@ -320,53 +320,53 @@ func (s *SQLStore) Rebuild(ctx context.Context, userID string) error {
 	direct := []struct{ sel, ins, key string }{
 		{
 			sel: `SELECT subject_id, SUM(weight), COUNT(*), MAX(ts) FROM signals
-			      WHERE user_id = ? AND subject_type = 'artist' GROUP BY subject_id`,
+			      WHERE user_id = $1 AND subject_type = 'artist' GROUP BY subject_id`,
 			ins: `INSERT INTO artist_affinity (user_id, artist_mbid, score, signal_count, last_signal_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?)
+			      VALUES ($1, $2, $3, $4, $5, $6)
 			      ON CONFLICT (user_id, artist_mbid) DO UPDATE SET
 			        score = artist_affinity.score + excluded.score,
 			        signal_count = artist_affinity.signal_count + excluded.signal_count,
-			        last_signal_at = MAX(artist_affinity.last_signal_at, excluded.last_signal_at),
+			        last_signal_at = GREATEST(artist_affinity.last_signal_at, excluded.last_signal_at),
 			        updated_at = excluded.updated_at`,
 		},
 		{
 			sel: `SELECT subject_id, SUM(weight), COUNT(*), MAX(ts) FROM signals
-			      WHERE user_id = ? AND subject_type = 'album' GROUP BY subject_id`,
+			      WHERE user_id = $1 AND subject_type = 'album' GROUP BY subject_id`,
 			ins: `INSERT INTO album_affinity (user_id, album_mbid, score, signal_count, last_signal_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?)
+			      VALUES ($1, $2, $3, $4, $5, $6)
 			      ON CONFLICT (user_id, album_mbid) DO UPDATE SET
 			        score = album_affinity.score + excluded.score,
 			        signal_count = album_affinity.signal_count + excluded.signal_count,
-			        last_signal_at = MAX(album_affinity.last_signal_at, excluded.last_signal_at),
+			        last_signal_at = GREATEST(album_affinity.last_signal_at, excluded.last_signal_at),
 			        updated_at = excluded.updated_at`,
 		},
 		{
 			sel: `SELECT subject_id, SUM(weight), COUNT(*), MAX(ts) FROM signals
-			      WHERE user_id = ? AND subject_type = 'track' GROUP BY subject_id`,
+			      WHERE user_id = $1 AND subject_type = 'track' GROUP BY subject_id`,
 			ins: `INSERT INTO track_affinity (user_id, track_mbid, score, signal_count, last_signal_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?)
+			      VALUES ($1, $2, $3, $4, $5, $6)
 			      ON CONFLICT (user_id, track_mbid) DO UPDATE SET
 			        score = track_affinity.score + excluded.score,
 			        signal_count = track_affinity.signal_count + excluded.signal_count,
-			        last_signal_at = MAX(track_affinity.last_signal_at, excluded.last_signal_at),
+			        last_signal_at = GREATEST(track_affinity.last_signal_at, excluded.last_signal_at),
 			        updated_at = excluded.updated_at`,
 		},
 		{
 			sel: `SELECT subject_id, SUM(weight), COUNT(*), MAX(ts) FROM signals
-			      WHERE user_id = ? AND subject_type = 'label' GROUP BY subject_id`,
+			      WHERE user_id = $1 AND subject_type = 'label' GROUP BY subject_id`,
 			ins: `INSERT INTO label_affinity (user_id, label_mbid, score, signal_count, last_signal_at, updated_at)
-			      VALUES (?, ?, ?, ?, ?, ?)
+			      VALUES ($1, $2, $3, $4, $5, $6)
 			      ON CONFLICT (user_id, label_mbid) DO UPDATE SET
 			        score = label_affinity.score + excluded.score,
 			        signal_count = label_affinity.signal_count + excluded.signal_count,
-			        last_signal_at = MAX(label_affinity.last_signal_at, excluded.last_signal_at),
+			        last_signal_at = GREATEST(label_affinity.last_signal_at, excluded.last_signal_at),
 			        updated_at = excluded.updated_at`,
 		},
 	}
 	now := s.now().UTC()
-	for _, d := range direct {
+	for i, d := range direct {
 		if err := replayAggregated(ctx, tx, d.sel, d.ins, userID, now); err != nil {
-			return err
+			return fmt.Errorf("replay#%d: %w", i, err)
 		}
 	}
 
@@ -374,86 +374,92 @@ func (s *SQLStore) Rebuild(ctx context.Context, userID string) error {
 	// 0.5×, track signals → artist at 0.25× (via the track's album).
 	propAlbum := `
 		INSERT INTO artist_affinity (user_id, artist_mbid, score, signal_count, last_signal_at, updated_at)
-		SELECT s.user_id, a.primary_artist_mbid, SUM(s.weight) * 0.5, COUNT(*), MAX(s.ts), ?
+		SELECT s.user_id, a.primary_artist_mbid, SUM(s.weight) * 0.5, COUNT(*), MAX(s.ts), $1
 		FROM signals s
 		JOIN albums a ON a.mbid = s.subject_id
-		WHERE s.user_id = ? AND s.subject_type = 'album'
+		WHERE s.user_id = $2 AND s.subject_type = 'album'
 		  AND a.primary_artist_mbid IS NOT NULL
 		GROUP BY s.user_id, a.primary_artist_mbid
 		ON CONFLICT (user_id, artist_mbid) DO UPDATE SET
 		  score = artist_affinity.score + excluded.score,
 		  signal_count = artist_affinity.signal_count + excluded.signal_count,
-		  last_signal_at = MAX(artist_affinity.last_signal_at, excluded.last_signal_at),
+		  last_signal_at = GREATEST(artist_affinity.last_signal_at, excluded.last_signal_at),
 		  updated_at = excluded.updated_at`
 	if _, err := tx.ExecContext(ctx, propAlbum, now, userID); err != nil {
-		return err
+		return fmt.Errorf("propAlbum: %w", err)
 	}
 
 	propTrackAlbum := `
 		INSERT INTO album_affinity (user_id, album_mbid, score, signal_count, last_signal_at, updated_at)
-		SELECT s.user_id, t.album_mbid, SUM(s.weight) * 0.5, COUNT(*), MAX(s.ts), ?
+		SELECT s.user_id, t.album_mbid, SUM(s.weight) * 0.5, COUNT(*), MAX(s.ts), $1
 		FROM signals s
 		JOIN tracks t ON t.mbid = s.subject_id
-		WHERE s.user_id = ? AND s.subject_type = 'track'
+		WHERE s.user_id = $2 AND s.subject_type = 'track'
 		  AND t.album_mbid IS NOT NULL
 		GROUP BY s.user_id, t.album_mbid
 		ON CONFLICT (user_id, album_mbid) DO UPDATE SET
 		  score = album_affinity.score + excluded.score,
 		  signal_count = album_affinity.signal_count + excluded.signal_count,
-		  last_signal_at = MAX(album_affinity.last_signal_at, excluded.last_signal_at),
+		  last_signal_at = GREATEST(album_affinity.last_signal_at, excluded.last_signal_at),
 		  updated_at = excluded.updated_at`
 	if _, err := tx.ExecContext(ctx, propTrackAlbum, now, userID); err != nil {
-		return err
+		return fmt.Errorf("propTrackAlbum: %w", err)
 	}
 
 	propTrackArtist := `
 		INSERT INTO artist_affinity (user_id, artist_mbid, score, signal_count, last_signal_at, updated_at)
 		SELECT s.user_id, COALESCE(t.artist_mbid, a.primary_artist_mbid),
-		       SUM(s.weight) * 0.25, COUNT(*), MAX(s.ts), ?
+		       SUM(s.weight) * 0.25, COUNT(*), MAX(s.ts), $1
 		FROM signals s
 		JOIN tracks t ON t.mbid = s.subject_id
 		LEFT JOIN albums a ON a.mbid = t.album_mbid
-		WHERE s.user_id = ? AND s.subject_type = 'track'
+		WHERE s.user_id = $2 AND s.subject_type = 'track'
 		  AND COALESCE(t.artist_mbid, a.primary_artist_mbid) IS NOT NULL
 		GROUP BY s.user_id, COALESCE(t.artist_mbid, a.primary_artist_mbid)
 		ON CONFLICT (user_id, artist_mbid) DO UPDATE SET
 		  score = artist_affinity.score + excluded.score,
 		  signal_count = artist_affinity.signal_count + excluded.signal_count,
-		  last_signal_at = MAX(artist_affinity.last_signal_at, excluded.last_signal_at),
+		  last_signal_at = GREATEST(artist_affinity.last_signal_at, excluded.last_signal_at),
 		  updated_at = excluded.updated_at`
 	if _, err := tx.ExecContext(ctx, propTrackArtist, now, userID); err != nil {
-		return err
+		return fmt.Errorf("propTrackArtist: %w", err)
 	}
 
 	return tx.Commit()
 }
 
 // replayAggregated drives rows from a SELECT ... GROUP BY into an INSERT ...
-// ON CONFLICT upsert. Using two steps keeps the dialect portable and lets
-// sqlite's single-statement bias off the hot path.
-//
-// lastTS is scanned as string: sqlite stores DATETIME as TEXT and modernc's
-// driver doesn't always round-trip it cleanly into time.Time. The column
-// accepts strings on write, so we pass the raw value through.
+// ON CONFLICT upsert. Using two steps keeps the dialect portable.
 func replayAggregated(ctx context.Context, tx *sql.Tx, sel, ins, userID string, now time.Time) error {
 	rows, err := tx.QueryContext(ctx, sel, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("sel: %w", err)
 	}
 	defer rows.Close()
+	type row struct {
+		subjectID string
+		score     float64
+		count     int
+		lastTS    sql.NullTime
+	}
+	var batch []row
 	for rows.Next() {
-		var subjectID string
-		var score float64
-		var count int
-		var lastTS sql.NullString
-		if err := rows.Scan(&subjectID, &score, &count, &lastTS); err != nil {
-			return err
+		var r row
+		if err := rows.Scan(&r.subjectID, &r.score, &r.count, &r.lastTS); err != nil {
+			return fmt.Errorf("scan: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, ins, userID, subjectID, score, count, lastTS, now); err != nil {
-			return err
+		batch = append(batch, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows: %w", err)
+	}
+	rows.Close()
+	for _, r := range batch {
+		if _, err := tx.ExecContext(ctx, ins, userID, r.subjectID, r.score, r.count, r.lastTS, now); err != nil {
+			return fmt.Errorf("ins: %w", err)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // ── default weights ─────────────────────────────────────────────────

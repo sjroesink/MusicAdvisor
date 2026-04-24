@@ -4,18 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 )
 
 func TestRequireAuth_NoCookie401(t *testing.T) {
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := testutil.OpenTestDB(t)
 	defer conn.Close()
 
 	store := auth.NewSessionStore(conn)
@@ -33,14 +29,11 @@ func TestRequireAuth_NoCookie401(t *testing.T) {
 }
 
 func TestRequireAuth_ValidCookieForwardsWithUserID(t *testing.T) {
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := testutil.OpenTestDB(t)
 	defer conn.Close()
 
 	userID := "u-123"
-	if _, err := conn.Exec(`INSERT INTO users(id) VALUES (?)`, userID); err != nil {
+	if _, err := conn.Exec(`INSERT INTO users(id) VALUES ($1)`, userID); err != nil {
 		t.Fatal(err)
 	}
 

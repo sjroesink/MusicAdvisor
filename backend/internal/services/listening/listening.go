@@ -290,11 +290,11 @@ func (s *Service) loadLastKnownPlay(ctx context.Context, userID string) (time.Ti
 		SELECT ph.played_at, ph.track_mbid, COALESCE(t.duration_sec, 0)
 		FROM play_history ph
 		LEFT JOIN tracks t ON t.mbid = ph.track_mbid
-		WHERE ph.user_id = ?
+		WHERE ph.user_id = $1
 		ORDER BY ph.played_at DESC
 		LIMIT 1
 	`, userID)
-	var playedAtRaw sql.NullString
+	var playedAtRaw sql.NullTime
 	var mbid sql.NullString
 	var duration int
 	if err := row.Scan(&playedAtRaw, &mbid, &duration); err != nil {
@@ -306,10 +306,7 @@ func (s *Service) loadLastKnownPlay(ctx context.Context, userID string) (time.Ti
 	if !playedAtRaw.Valid {
 		return time.Time{}, nil, nil
 	}
-	playedAt, err := parseSQLiteTime(playedAtRaw.String)
-	if err != nil {
-		return time.Time{}, nil, err
-	}
+	playedAt := playedAtRaw.Time
 	return playedAt, &play{
 		mbid:        mbid.String,
 		durationSec: duration,
@@ -318,26 +315,11 @@ func (s *Service) loadLastKnownPlay(ctx context.Context, userID string) (time.Ti
 	}, nil
 }
 
-func parseSQLiteTime(s string) (time.Time, error) {
-	for _, layout := range []string{
-		time.RFC3339Nano, time.RFC3339,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05.999999999-07:00",
-		"2006-01-02 15:04:05-07:00",
-		"2006-01-02 15:04:05",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("play_history: unrecognized time format %q", s)
-}
-
 func (s *Service) insertPlayHistory(ctx context.Context, userID, mbid string, rp spotify.RecentPlay) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO play_history
 		  (user_id, track_mbid, spotify_track_id, played_at, source, context_uri)
-		VALUES (?, ?, ?, ?, 'recently-played', ?)
+		VALUES ($1, $2, $3, $4, 'recently-played', $5)
 		ON CONFLICT DO NOTHING
 	`, userID, nullIfEmpty(mbid), rp.SpotifyID, rp.PlayedAt, nullIfEmpty(rp.ContextURI))
 	if err != nil {
@@ -350,7 +332,7 @@ func (s *Service) insertPlayHistory(ctx context.Context, userID, mbid string, rp
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id = COALESCE(excluded.spotify_id, artists.spotify_id),
 		  name       = excluded.name,
@@ -362,7 +344,7 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, mbid, spotifyID, title, artistMBID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
-		VALUES (?, ?, ?, ?, 'Album', ?)
+		VALUES ($1, $2, $3, $4, 'Album', $5)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id          = COALESCE(excluded.spotify_id, albums.spotify_id),
 		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
@@ -379,7 +361,7 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id   = COALESCE(excluded.spotify_id, tracks.spotify_id),
 		  album_mbid   = COALESCE(excluded.album_mbid, tracks.album_mbid),
@@ -392,21 +374,20 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 }
 
 func (s *Service) startRun(ctx context.Context, userID, kind string, started time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO sync_runs (user_id, kind, started_at, status)
-		VALUES (?, ?, ?, 'running')
-	`, userID, kind, started)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, 'running')
+		RETURNING id
+	`, userID, kind, started).Scan(&id)
+	return id, err
 }
 
 func (s *Service) finishRun(ctx context.Context, id int64, status string, itemsAdded int, errText string, finished time.Time) {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sync_runs
-		SET status = ?, finished_at = ?, items_added = ?, error = NULLIF(?, '')
-		WHERE id = ?
+		SET status = $1, finished_at = $2, items_added = $3, error = NULLIF($4, '')
+		WHERE id = $5
 	`, status, finished, itemsAdded, errText, id)
 	if err != nil {
 		s.logger.Warn("listening: finishRun update failed", "err", err)

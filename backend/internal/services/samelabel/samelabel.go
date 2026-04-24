@@ -12,7 +12,6 @@ package samelabel
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -231,7 +230,7 @@ func (s *Service) collectLabels(ctx context.Context, artistMBID string) ([]music
 		FROM album_labels al
 		JOIN labels l  ON l.mbid = al.label_mbid
 		JOIN albums a  ON a.mbid = al.album_mbid
-		WHERE a.primary_artist_mbid = ?
+		WHERE a.primary_artist_mbid = $1
 	`, artistMBID)
 	if err != nil {
 		return nil, err
@@ -309,11 +308,11 @@ func (s *Service) loadSeeds(ctx context.Context, userID string, limit int) ([]se
 		SELECT a.mbid, a.name, COALESCE(aa.score, 0) AS score
 		FROM artists a
 		LEFT JOIN artist_affinity aa
-		       ON aa.artist_mbid = a.mbid AND aa.user_id = ?
-		WHERE a.mbid IN (SELECT artist_mbid FROM saved_artists WHERE user_id = ?)
+		       ON aa.artist_mbid = a.mbid AND aa.user_id = $1
+		WHERE a.mbid IN (SELECT artist_mbid FROM saved_artists WHERE user_id = $2)
 		   OR COALESCE(aa.score, 0) > 0
 		ORDER BY score DESC, a.name
-		LIMIT ?
+		LIMIT $3
 	`, userID, userID, limit)
 	if err != nil {
 		return nil, err
@@ -334,7 +333,7 @@ func (s *Service) loadSeeds(ctx context.Context, userID string, limit int) ([]se
 // saved or explicitly hidden. Same-label shouldn't re-surface either.
 func (s *Service) loadAlbumExclusions(ctx context.Context, userID string) (map[string]bool, error) {
 	out := map[string]bool{}
-	rows, err := s.db.QueryContext(ctx, `SELECT album_mbid FROM saved_albums WHERE user_id = ?`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT album_mbid FROM saved_albums WHERE user_id = $1`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +347,7 @@ func (s *Service) loadAlbumExclusions(ctx context.Context, userID string) (map[s
 	}
 	rows.Close()
 	rows, err = s.db.QueryContext(ctx, `
-		SELECT subject_id FROM hides WHERE user_id = ? AND subject_type = 'album'
+		SELECT subject_id FROM hides WHERE user_id = $1 AND subject_type = 'album'
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -365,43 +364,24 @@ func (s *Service) loadAlbumExclusions(ctx context.Context, userID string) (map[s
 }
 
 func (s *Service) hasFreshRun(ctx context.Context, userID string, now time.Time) (bool, time.Time, error) {
-	var raw sql.NullString
+	var raw sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT MAX(started_at) FROM sync_runs
-		WHERE user_id = ? AND kind = 'mb-same-label' AND status != 'failed'
+		WHERE user_id = $1 AND kind = 'mb-same-label' AND status != 'failed'
 	`, userID).Scan(&raw)
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	if !raw.Valid || raw.String == "" {
+	if !raw.Valid {
 		return false, time.Time{}, nil
 	}
-	latest, err := parseSQLiteTime(raw.String)
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	return now.Sub(latest) < MinInterval, latest, nil
-}
-
-func parseSQLiteTime(s string) (time.Time, error) {
-	for _, layout := range []string{
-		time.RFC3339Nano, time.RFC3339,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05.999999999-07:00",
-		"2006-01-02 15:04:05-07:00",
-		"2006-01-02 15:04:05",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, errors.New("samelabel: unrecognized time format " + s)
+	return now.Sub(raw.Time) < MinInterval, raw.Time, nil
 }
 
 func (s *Service) upsertArtist(ctx context.Context, mbid, name string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, name, updated_at)
-		VALUES (?, ?, ?)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  name       = excluded.name,
 		  updated_at = excluded.updated_at
@@ -416,7 +396,7 @@ func (s *Service) upsertAlbum(ctx context.Context, mbid, artistMBID, title, prim
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, primary_artist_mbid, title, release_date, type, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
 		  title               = excluded.title,
@@ -429,7 +409,7 @@ func (s *Service) upsertAlbum(ctx context.Context, mbid, artistMBID, title, prim
 
 func (s *Service) upsertLabel(ctx context.Context, mbid, name string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO labels (mbid, name) VALUES (?, ?)
+		INSERT INTO labels (mbid, name) VALUES ($1, $2)
 		ON CONFLICT (mbid) DO UPDATE SET name = excluded.name
 	`, mbid, name)
 	return err
@@ -437,7 +417,7 @@ func (s *Service) upsertLabel(ctx context.Context, mbid, name string) error {
 
 func (s *Service) linkAlbumLabel(ctx context.Context, albumMBID, labelMBID string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO album_labels (album_mbid, label_mbid) VALUES (?, ?)
+		INSERT INTO album_labels (album_mbid, label_mbid) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING
 	`, albumMBID, labelMBID)
 	return err
@@ -447,7 +427,7 @@ func (s *Service) upsertCandidate(ctx context.Context, userID, albumMBID string,
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO discover_candidates
 		  (user_id, subject_type, subject_id, source, raw_score, reason_data, discovered_at, expires_at)
-		VALUES (?, 'album', ?, ?, ?, ?, ?, ?)
+		VALUES ($1, 'album', $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (user_id, subject_type, subject_id, source) DO UPDATE SET
 		  raw_score    = excluded.raw_score,
 		  reason_data  = excluded.reason_data,
@@ -461,21 +441,20 @@ func (s *Service) upsertCandidate(ctx context.Context, userID, albumMBID string,
 }
 
 func (s *Service) startRun(ctx context.Context, userID, kind string, started time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO sync_runs (user_id, kind, started_at, status)
-		VALUES (?, ?, ?, 'running')
-	`, userID, kind, started)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, 'running')
+		RETURNING id
+	`, userID, kind, started).Scan(&id)
+	return id, err
 }
 
 func (s *Service) finishRun(ctx context.Context, id int64, status string, itemsAdded int, errText string, finished time.Time) {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sync_runs
-		SET status = ?, finished_at = ?, items_added = ?, error = NULLIF(?, '')
-		WHERE id = ?
+		SET status = $1, finished_at = $2, items_added = $3, error = NULLIF($4, '')
+		WHERE id = $5
 	`, status, finished, itemsAdded, errText, id)
 	if err != nil {
 		s.logger.Warn("samelabel: finishRun update failed", "err", err)

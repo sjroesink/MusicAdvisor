@@ -5,11 +5,10 @@ import (
 	"database/sql"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/spotify"
 	"github.com/sjroesink/music-advisor/backend/internal/services/listening"
@@ -50,11 +49,7 @@ func (r *fakeResolver) ResolveTrack(_ context.Context, spotifyID, _ string) (res
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "l.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 	if _, err := conn.Exec(`INSERT INTO users(id) VALUES('u1')`); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +66,7 @@ func newSvc(t *testing.T, conn *sql.DB, sp *fakeSpotify, res *fakeResolver) *lis
 func signalKindsFor(t *testing.T, conn *sql.DB, mbid string) []string {
 	t.Helper()
 	rows, err := conn.Query(`
-		SELECT kind FROM signals WHERE user_id='u1' AND subject_id=? AND subject_type='track' ORDER BY id
+		SELECT kind FROM signals WHERE user_id='u1' AND subject_id=$1 AND subject_type='track' ORDER BY id
 	`, mbid)
 	if err != nil {
 		t.Fatal(err)

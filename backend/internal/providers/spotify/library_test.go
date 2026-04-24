@@ -208,7 +208,7 @@ func TestFetchFollowedArtists_CursorPagination(t *testing.T) {
 		after := r.URL.Query().Get("after")
 		switch after {
 		case "":
-			fmt.Fprint(w, `{"artists":{"next":"/me/following?after=cursor1","cursors":{"after":"cursor1"},"items":[{"id":"ar1","name":"A1"}]}}`)
+			fmt.Fprint(w, `{"artists":{"next":"/me/following$1after=cursor1","cursors":{"after":"cursor1"},"items":[{"id":"ar1","name":"A1"}]}}`)
 		case "cursor1":
 			fmt.Fprint(w, `{"artists":{"next":"","cursors":{"after":""},"items":[{"id":"ar2","name":"A2"}]}}`)
 		default:

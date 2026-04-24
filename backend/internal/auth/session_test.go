@@ -3,23 +3,19 @@ package auth_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 )
 
 func TestSessionStore_CreateGetDelete(t *testing.T) {
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := testutil.OpenTestDB(t)
 	defer conn.Close()
 
 	userID := "u-1"
-	if _, err := conn.Exec(`INSERT INTO users(id) VALUES (?)`, userID); err != nil {
+	if _, err := conn.Exec(`INSERT INTO users(id) VALUES ($1)`, userID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,14 +50,11 @@ func TestSessionStore_CreateGetDelete(t *testing.T) {
 }
 
 func TestSessionStore_Get_ExpiredReturnsExpired(t *testing.T) {
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := testutil.OpenTestDB(t)
 	defer conn.Close()
 
 	userID := "u-1"
-	if _, err := conn.Exec(`INSERT INTO users(id) VALUES (?)`, userID); err != nil {
+	if _, err := conn.Exec(`INSERT INTO users(id) VALUES ($1)`, userID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,7 +66,7 @@ func TestSessionStore_Get_ExpiredReturnsExpired(t *testing.T) {
 
 	// Manually expire.
 	if _, err := conn.Exec(
-		`UPDATE sessions SET expires_at = ? WHERE id = ?`,
+		`UPDATE sessions SET expires_at = $1 WHERE id = $2`,
 		time.Now().Add(-time.Hour), sess.ID,
 	); err != nil {
 		t.Fatal(err)

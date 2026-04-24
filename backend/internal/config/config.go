@@ -14,7 +14,7 @@ import (
 type Config struct {
 	BaseURL             string
 	Address             string
-	DatabasePath        string
+	DatabaseURL         string // postgres DSN, e.g. postgres://user:pass@host:5432/db?sslmode=disable
 	LogLevel            string
 	LogFormat           string // "text" (human) or "json" (prod)
 	FrontendPath        string // filesystem path to the built frontend; empty disables static serving
@@ -40,7 +40,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		BaseURL:             env("MA_BASE_URL", "http://localhost:8080"),
 		Address:             env("MA_ADDRESS", ":8080"),
-		DatabasePath:        env("MA_DATABASE_PATH", "./data/music-advisor.db"),
+		DatabaseURL:         env("MA_DATABASE_URL", "postgres://musicadvisor:musicadvisor@localhost:5432/musicadvisor?sslmode=disable"),
 		LogLevel:            env("MA_LOG_LEVEL", "info"),
 		LogFormat:           env("MA_LOG_FORMAT", "text"),
 		FrontendPath:        os.Getenv("MA_FRONTEND_PATH"),

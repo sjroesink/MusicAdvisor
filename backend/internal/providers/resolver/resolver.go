@@ -198,7 +198,7 @@ func (s *Service) checkCache(ctx context.Context, spotifyID string, st SubjectTy
 	row := s.db.QueryRowContext(ctx, `
 		SELECT mbid, confidence, resolved_at
 		FROM resolver_cache
-		WHERE spotify_id = ? AND subject_type = ?
+		WHERE spotify_id = $1 AND subject_type = $2
 	`, spotifyID, string(st))
 
 	var (
@@ -229,7 +229,7 @@ func (s *Service) checkCache(ctx context.Context, spotifyID string, st SubjectTy
 func (s *Service) writeHit(ctx context.Context, spotifyID string, st SubjectType, res Result) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO resolver_cache (spotify_id, subject_type, mbid, confidence, resolved_at)
-		VALUES (?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (spotify_id, subject_type) DO UPDATE SET
 			mbid = excluded.mbid,
 			confidence = excluded.confidence,
@@ -241,7 +241,7 @@ func (s *Service) writeHit(ctx context.Context, spotifyID string, st SubjectType
 func (s *Service) writeTombstone(ctx context.Context, spotifyID string, st SubjectType) {
 	_, _ = s.db.ExecContext(ctx, `
 		INSERT INTO resolver_cache (spotify_id, subject_type, mbid, confidence, resolved_at)
-		VALUES (?, ?, NULL, NULL, ?)
+		VALUES ($1, $2, NULL, NULL, $3)
 		ON CONFLICT (spotify_id, subject_type) DO UPDATE SET
 			mbid = NULL, confidence = NULL, resolved_at = excluded.resolved_at
 	`, spotifyID, string(st), s.now().UTC())

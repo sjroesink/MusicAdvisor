@@ -3,10 +3,9 @@ package resolver_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/resolver"
 )
@@ -44,11 +43,7 @@ func (f *fakeMB) SearchArtistByName(_ context.Context, name string) (musicbrainz
 
 func newSvc(t *testing.T, fake *fakeMB) *resolver.Service {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 	return resolver.New(conn, fake)
 }
 

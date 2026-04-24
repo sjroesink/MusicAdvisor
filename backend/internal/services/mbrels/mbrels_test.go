@@ -5,11 +5,10 @@ import (
 	"database/sql"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
 	"github.com/sjroesink/music-advisor/backend/internal/services/mbrels"
 )
@@ -37,11 +36,7 @@ func (f *fakeMB) BrowseReleaseGroupsByArtist(_ context.Context, mbid string, _ i
 
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "m.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 	if _, err := conn.Exec(`INSERT INTO users(id) VALUES('u1')`); err != nil {
 		t.Fatal(err)
 	}
@@ -50,18 +45,18 @@ func newDB(t *testing.T) *sql.DB {
 
 func seedFollowed(t *testing.T, conn *sql.DB, mbid, name string, aff float64) {
 	t.Helper()
-	if _, err := conn.Exec(`INSERT INTO artists (mbid, name) VALUES (?, ?) ON CONFLICT DO NOTHING`, mbid, name); err != nil {
+	if _, err := conn.Exec(`INSERT INTO artists (mbid, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`, mbid, name); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
 		INSERT INTO saved_artists (user_id, artist_mbid, saved_at)
-		VALUES ('u1', ?, ?) ON CONFLICT DO NOTHING
+		VALUES ('u1', $1, $2) ON CONFLICT DO NOTHING
 	`, mbid, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
 		INSERT INTO artist_affinity (user_id, artist_mbid, score, signal_count, updated_at)
-		VALUES ('u1', ?, ?, 1, ?)
+		VALUES ('u1', $1, $2, 1, $3)
 	`, mbid, aff, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +115,7 @@ func TestSync_SkipsFollowedAndHiddenTargets(t *testing.T) {
 	seedFollowed(t, conn, "already-followed", "Already Known", 1.0)
 	if _, err := conn.Exec(`
 		INSERT INTO hides (user_id, subject_type, subject_id, created_at)
-		VALUES ('u1', 'artist', 'hidden-rel', ?)
+		VALUES ('u1', 'artist', 'hidden-rel', $1)
 	`, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +152,7 @@ func TestSync_SkipsIfRecentRun(t *testing.T) {
 	seedFollowed(t, conn, "seed-1", "Band", 5.0)
 	if _, err := conn.Exec(`
 		INSERT INTO sync_runs (user_id, kind, started_at, status)
-		VALUES ('u1', 'mb-artist-rels', ?, 'ok')
+		VALUES ('u1', 'mb-artist-rels', $1, 'ok')
 	`, time.Now().UTC().Add(-1*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

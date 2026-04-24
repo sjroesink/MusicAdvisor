@@ -1,3 +1,7 @@
+// Package db opens a pooled Postgres connection via pgx (stdlib shim) and
+// applies any pending embedded migrations at startup. The stdlib shim
+// lets services keep using database/sql while benefiting from pgx's
+// native protocol support.
 package db
 
 import (
@@ -7,36 +11,41 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Open opens the SQLite database at path, configures WAL and sensible
-// pragmas, and runs any pending migrations embedded in the binary.
-func Open(path string) (*sql.DB, error) {
-	if err := ensureParentDir(path); err != nil {
-		return nil, err
-	}
-	// _pragma entries are applied per connection on open.
-	dsn := "file:" + path + "?" +
-		"_pragma=journal_mode(WAL)&" +
-		"_pragma=synchronous(NORMAL)&" +
-		"_pragma=foreign_keys(ON)&" +
-		"_pragma=busy_timeout(5000)&" +
-		"_time_format=sqlite"
-
-	conn, err := sql.Open("sqlite", dsn)
+// Open dials the Postgres server at dsn, waits briefly for it to accept
+// connections (dev docker-compose starts pg and app side by side, so Ping
+// is retried with a small budget), and applies migrations.
+func Open(dsn string) (*sql.DB, error) {
+	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	conn.SetMaxOpenConns(1) // serialize writes; reads go via separate connections added later
-	if err := conn.Ping(); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
+	// Sane pool defaults. Postgres handles concurrency well; no reason to
+	// pin to 1 like we did with SQLite.
+	conn.SetMaxOpenConns(16)
+	conn.SetMaxIdleConns(4)
+	conn.SetConnMaxLifetime(30 * time.Minute)
+
+	// Short ping retry loop so a freshly started `docker compose up` doesn't
+	// need an explicit wait-for-it in the app container.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if err := conn.Ping(); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			conn.Close()
+			return nil, fmt.Errorf("ping postgres: %w", err)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
+
 	if err := migrate(conn); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -44,18 +53,10 @@ func Open(path string) (*sql.DB, error) {
 	return conn, nil
 }
 
-func ensureParentDir(path string) error {
-	dir := filepath.Dir(path)
-	if dir == "" || dir == "." {
-		return nil
-	}
-	return mkdirAll(dir)
-}
-
 func migrate(conn *sql.DB) error {
 	if _, err := conn.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-		version TEXT PRIMARY KEY,
-		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		version    TEXT PRIMARY KEY,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`); err != nil {
 		return err
 	}
@@ -97,7 +98,7 @@ func migrate(conn *sql.DB) error {
 			tx.Rollback()
 			return fmt.Errorf("apply %s: %w", p.version, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO schema_migrations(version) VALUES(?)`, p.version); err != nil {
+		if _, err := tx.Exec(`INSERT INTO schema_migrations(version) VALUES($1)`, p.version); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -126,7 +127,6 @@ func loadApplied(conn *sql.DB) (map[string]struct{}, error) {
 }
 
 func matchesUpMigration(name string) bool {
-	// matches <digits>_<name>.up.sql
 	if len(name) < len("0_.up.sql") {
 		return false
 	}

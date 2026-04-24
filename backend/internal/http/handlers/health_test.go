@@ -5,18 +5,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/http/handlers"
 )
 
 func TestHealth_OK(t *testing.T) {
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	conn := testutil.OpenTestDB(t)
 	defer conn.Close()
 
 	h := handlers.Health(conn, slog.New(slog.NewTextHandler(io.Discard, nil)))

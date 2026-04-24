@@ -51,7 +51,7 @@ func SpotifyLogin(d SpotifyAuthDeps) http.HandlerFunc {
 
 		_, err = d.DB.ExecContext(r.Context(), `
 			INSERT INTO oauth_states(state, code_verifier, expires_at)
-			VALUES (?, ?, ?)
+			VALUES ($1, $2, $3)
 		`, state, verifier, time.Now().UTC().Add(5*time.Minute))
 		if err != nil {
 			d.Logger.Error("spotify login: insert oauth_states", "err", err)
@@ -164,7 +164,7 @@ func consumeOAuthState(ctx context.Context, db *sql.DB, state string) (string, e
 	var verifier string
 	var expiresAt time.Time
 	err = tx.QueryRowContext(ctx,
-		`SELECT code_verifier, expires_at FROM oauth_states WHERE state = ?`,
+		`SELECT code_verifier, expires_at FROM oauth_states WHERE state = $1`,
 		state,
 	).Scan(&verifier, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -173,7 +173,7 @@ func consumeOAuthState(ctx context.Context, db *sql.DB, state string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE state = ?`, state); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE state = $1`, state); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {

@@ -296,9 +296,9 @@ func ListSyncRuns(d SyncDeps) http.HandlerFunc {
 			SELECT id, kind, status, started_at, finished_at, items_added,
 			       COALESCE(error, '')
 			FROM sync_runs
-			WHERE user_id = ?
+			WHERE user_id = $1
 			ORDER BY started_at DESC
-			LIMIT ?
+			LIMIT $2
 		`, userID, limit)
 		if err != nil {
 			d.Logger.Error("list sync_runs", "err", err)

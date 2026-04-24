@@ -1,4 +1,25 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: music-advisor-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: musicadvisor
+      POSTGRES_USER: musicadvisor
+      POSTGRES_PASSWORD: ${MA_POSTGRES_PASSWORD:-musicadvisor}
+    volumes:
+      - ma-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U musicadvisor -d musicadvisor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # No host port published by default — only the app talks to pg over the
+    # compose network. Uncomment to inspect with psql/pgAdmin from the host.
+    # ports:
+    #   - "5432:5432"
+
   music-advisor:
     build:
       context: .
@@ -6,12 +27,15 @@ services:
     image: music-advisor:local
     container_name: music-advisor
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       MA_BASE_URL: ${MA_BASE_URL:-http://localhost:8080}
       MA_ADDRESS: ":8080"
-      MA_DATABASE_PATH: /data/music-advisor.db
+      MA_DATABASE_URL: postgres://musicadvisor:${MA_POSTGRES_PASSWORD:-musicadvisor}@postgres:5432/musicadvisor?sslmode=disable
       MA_FRONTEND_PATH: /app/frontend/dist
       MA_LOG_LEVEL: ${MA_LOG_LEVEL:-info}
       MA_LOG_FORMAT: ${MA_LOG_FORMAT:-text}
@@ -23,8 +47,8 @@ services:
       MA_SPOTIFY_CLIENT_ID: ${MA_SPOTIFY_CLIENT_ID:-}
       MA_SPOTIFY_CLIENT_SECRET: ${MA_SPOTIFY_CLIENT_SECRET:-}
       MA_USER_AGENT_CONTACT: ${MA_USER_AGENT_CONTACT:-you@example.com}
-    volumes:
-      - ma-data:/data
+      MA_LASTFM_API_KEY: ${MA_LASTFM_API_KEY:-}
+      MA_LISTENBRAINZ_TOKEN: ${MA_LISTENBRAINZ_TOKEN:-}
     healthcheck:
       test: ["CMD", "/app/music-advisor", "--healthcheck"]
       interval: 30s
@@ -49,7 +73,7 @@ services:
     #   - proxy
 
 volumes:
-  ma-data:
+  ma-pgdata:
 
 # networks:
 #   proxy:

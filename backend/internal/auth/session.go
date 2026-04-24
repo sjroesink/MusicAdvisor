@@ -52,7 +52,7 @@ func (s *SessionStore) Create(ctx context.Context, userID, userAgent string) (Se
 	expires := now.Add(SessionTTL)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, user_id, expires_at, last_accessed_at, user_agent, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`, id, userID, expires, now, userAgent, now)
 	if err != nil {
 		return Session{}, err
@@ -72,7 +72,7 @@ func (s *SessionStore) Create(ctx context.Context, userID, userAgent string) (Se
 func (s *SessionStore) Get(ctx context.Context, id string) (Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, expires_at, last_accessed_at, user_agent, created_at
-		FROM sessions WHERE id = ?
+		FROM sessions WHERE id = $1
 	`, id)
 	var sess Session
 	err := row.Scan(&sess.ID, &sess.UserID, &sess.ExpiresAt, &sess.LastAccessedAt, &sess.UserAgent, &sess.CreatedAt)
@@ -96,7 +96,7 @@ func (s *SessionStore) TouchIfStale(ctx context.Context, id string, lastAccessed
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET last_accessed_at = ? WHERE id = ?`,
+		`UPDATE sessions SET last_accessed_at = $1 WHERE id = $2`,
 		time.Now().UTC(), id,
 	)
 	return err
@@ -104,14 +104,14 @@ func (s *SessionStore) TouchIfStale(ctx context.Context, id string, lastAccessed
 
 // Delete removes a session (logout).
 func (s *SessionStore) Delete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = $1`, id)
 	return err
 }
 
 // DeleteExpired prunes expired sessions. Called by a background job later.
 func (s *SessionStore) DeleteExpired(ctx context.Context) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM sessions WHERE expires_at < ?`, time.Now().UTC(),
+		`DELETE FROM sessions WHERE expires_at < $1`, time.Now().UTC(),
 	)
 	if err != nil {
 		return 0, err

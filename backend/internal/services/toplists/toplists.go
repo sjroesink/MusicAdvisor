@@ -338,42 +338,21 @@ func topRankWeight(rank int, mult float64) float64 {
 
 // ── DB ──────────────────────────────────────────────────────────────
 
-// hasFreshSnapshot reads MAX(snapshot_at) as string because modernc's sqlite
-// driver doesn't round-trip DATETIME columns into time.Time cleanly. Values
-// written by us always land in one of time.RFC3339 or SQLite's "YYYY-MM-DD
-// HH:MM:SS" form, so we try both.
+// hasFreshSnapshot returns the most recent top-snapshot timestamp and a
+// boolean indicating whether it falls inside the MinInterval gate.
 func (s *Service) hasFreshSnapshot(ctx context.Context, userID string, now time.Time) (bool, time.Time, error) {
-	var raw sql.NullString
+	var raw sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT MAX(snapshot_at) FROM top_snapshots
-		WHERE user_id = ? AND kind = 'artist'
+		WHERE user_id = $1 AND kind = 'artist'
 	`, userID).Scan(&raw)
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	if !raw.Valid || raw.String == "" {
+	if !raw.Valid {
 		return false, time.Time{}, nil
 	}
-	latest, err := parseSQLiteTime(raw.String)
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	return now.Sub(latest) < MinInterval, latest, nil
-}
-
-func parseSQLiteTime(s string) (time.Time, error) {
-	for _, layout := range []string{
-		time.RFC3339Nano, time.RFC3339,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05.999999999-07:00",
-		"2006-01-02 15:04:05-07:00",
-		"2006-01-02 15:04:05",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("top_snapshots: unrecognized time format %q", s)
+	return now.Sub(raw.Time) < MinInterval, raw.Time, nil
 }
 
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
@@ -382,7 +361,7 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id = COALESCE(excluded.spotify_id, artists.spotify_id),
 		  name       = excluded.name,
@@ -394,7 +373,7 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 func (s *Service) insertSnapshot(ctx context.Context, userID, kind, timeRange string, rank int, mbid string, snapshotAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO top_snapshots (user_id, kind, time_range, rank, subject_mbid, snapshot_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`, userID, kind, timeRange, rank, mbid, snapshotAt)
 	return err
 }
@@ -402,7 +381,7 @@ func (s *Service) insertSnapshot(ctx context.Context, userID, kind, timeRange st
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, mbid, spotifyID, title, artistMBID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
-		VALUES (?, ?, ?, ?, 'Album', ?)
+		VALUES ($1, $2, $3, $4, 'Album', $5)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id          = COALESCE(excluded.spotify_id, albums.spotify_id),
 		  primary_artist_mbid = COALESCE(excluded.primary_artist_mbid, albums.primary_artist_mbid),
@@ -419,7 +398,7 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (mbid) DO UPDATE SET
 		  spotify_id   = COALESCE(excluded.spotify_id, tracks.spotify_id),
 		  album_mbid   = COALESCE(excluded.album_mbid, tracks.album_mbid),
@@ -432,21 +411,20 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 }
 
 func (s *Service) startRun(ctx context.Context, userID, kind string, started time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO sync_runs (user_id, kind, started_at, status)
-		VALUES (?, ?, ?, 'running')
-	`, userID, kind, started)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+		VALUES ($1, $2, $3, 'running')
+		RETURNING id
+	`, userID, kind, started).Scan(&id)
+	return id, err
 }
 
 func (s *Service) finishRun(ctx context.Context, id int64, status string, itemsAdded int, errText string, finished time.Time) {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sync_runs
-		SET status = ?, finished_at = ?, items_added = ?, error = NULLIF(?, '')
-		WHERE id = ?
+		SET status = $1, finished_at = $2, items_added = $3, error = NULLIF($4, '')
+		WHERE id = $5
 	`, status, finished, itemsAdded, errText, id)
 	if err != nil {
 		s.logger.Warn("toplists: finishRun update failed", "err", err)

@@ -143,22 +143,22 @@ func readFeedHeader(ctx context.Context, db *sql.DB, userID string) (FeedHeader,
 	// Library count = saved_artists + saved_albums (tracks not synced in MVP).
 	var artistCount, albumCount int
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM saved_artists WHERE user_id = ?`, userID).Scan(&artistCount); err != nil {
+		`SELECT COUNT(*) FROM saved_artists WHERE user_id = $1`, userID).Scan(&artistCount); err != nil {
 		return h, err
 	}
 	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM saved_albums WHERE user_id = ?`, userID).Scan(&albumCount); err != nil {
+		`SELECT COUNT(*) FROM saved_albums WHERE user_id = $1`, userID).Scan(&albumCount); err != nil {
 		return h, err
 	}
 	h.LibraryCount = artistCount + albumCount
 
 	// Latest sync_runs row drives status + last_sync_at.
-	var started sql.NullString
+	var started sql.NullTime
 	var status sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT started_at, status
 		FROM sync_runs
-		WHERE user_id = ?
+		WHERE user_id = $1
 		ORDER BY started_at DESC
 		LIMIT 1
 	`, userID).Scan(&started, &status)
@@ -176,9 +176,7 @@ func readFeedHeader(ctx context.Context, db *sql.DB, userID string) (FeedHeader,
 			h.Status = "ready"
 		}
 		if started.Valid {
-			if t, err := parseSQLiteTime(started.String); err == nil {
-				h.LastSyncAt = t
-			}
+			h.LastSyncAt = started.Time
 		}
 	}
 	return h, nil
@@ -187,11 +185,8 @@ func readFeedHeader(ctx context.Context, db *sql.DB, userID string) (FeedHeader,
 // ── cards ───────────────────────────────────────────────────────────
 
 // readCards walks discover_candidates for one source, joins catalog tables,
-// and formats each row into a FeedCard. Expired candidates are excluded.
-// The "now" cutoff is explicit rather than SQLite's CURRENT_TIMESTAMP —
-// modernc's driver stores time.Time with a timezone suffix that doesn't
-// lexicographically compare cleanly against CURRENT_TIMESTAMP's
-// zoneless "YYYY-MM-DD HH:MM:SS".
+// and formats each row into a FeedCard. Expired candidates are excluded
+// via a native TIMESTAMPTZ comparison.
 func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCard, error) {
 	now := time.Now().UTC()
 	rows, err := db.QueryContext(ctx, `
@@ -205,9 +200,9 @@ func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCa
 		FROM discover_candidates dc
 		LEFT JOIN albums  a  ON a.mbid  = dc.subject_id AND dc.subject_type = 'album'
 		LEFT JOIN artists ar ON ar.mbid = a.primary_artist_mbid
-		WHERE dc.user_id = ?
-		  AND dc.source  = ?
-		  AND (dc.expires_at IS NULL OR unixepoch(dc.expires_at) > unixepoch(?))
+		WHERE dc.user_id = $1
+		  AND dc.source  = $2
+		  AND (dc.expires_at IS NULL OR dc.expires_at > $3)
 		ORDER BY dc.raw_score DESC
 		LIMIT 50
 	`, userID, source, now)
@@ -464,7 +459,7 @@ func or(a, b string) string {
 
 func readRatings(ctx context.Context, db *sql.DB, userID string) ([]FeedRating, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT subject_type, subject_id, rating FROM ratings WHERE user_id = ?
+		SELECT subject_type, subject_id, rating FROM ratings WHERE user_id = $1
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -483,7 +478,7 @@ func readRatings(ctx context.Context, db *sql.DB, userID string) ([]FeedRating, 
 
 func readHides(ctx context.Context, db *sql.DB, userID string) ([]FeedHide, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT subject_type, subject_id FROM hides WHERE user_id = ?
+		SELECT subject_type, subject_id FROM hides WHERE user_id = $1
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -500,20 +495,3 @@ func readHides(ctx context.Context, db *sql.DB, userID string) ([]FeedHide, erro
 	return out, rows.Err()
 }
 
-// parseSQLiteTime mirrors the helper used elsewhere — sqlite DATETIME
-// columns come back as TEXT and the driver doesn't always unmarshal into
-// time.Time cleanly.
-func parseSQLiteTime(s string) (time.Time, error) {
-	for _, layout := range []string{
-		time.RFC3339Nano, time.RFC3339,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05.999999999-07:00",
-		"2006-01-02 15:04:05-07:00",
-		"2006-01-02 15:04:05",
-	} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("feed: unrecognized time format %q", s)
-}

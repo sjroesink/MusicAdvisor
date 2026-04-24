@@ -4,22 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/services/user"
 )
 
 func newSvc(t *testing.T) *user.Service {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 
 	key := make([]byte, 32)
 	rand.Read(key)

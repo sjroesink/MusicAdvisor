@@ -63,7 +63,7 @@ func (s *Service) UpsertByExternal(ctx context.Context, a ExternalAccount) (stri
 	var userID string
 	err = tx.QueryRowContext(ctx, `
 		SELECT user_id FROM external_accounts
-		WHERE provider = ? AND external_id = ?
+		WHERE provider = $1 AND external_id = $2
 	`, a.Provider, a.ExternalID).Scan(&userID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -75,7 +75,7 @@ func (s *Service) UpsertByExternal(ctx context.Context, a ExternalAccount) (stri
 			INSERT INTO external_accounts (user_id, provider, external_id,
 				access_token_enc, refresh_token_enc, token_expires_at, scopes,
 				needs_reconnect, connected_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8)
 		`, userID, a.Provider, a.ExternalID, encAccess, encRefresh,
 			a.TokenExpiresAt, a.Scopes, s.now().UTC())
 		if err != nil {
@@ -86,9 +86,9 @@ func (s *Service) UpsertByExternal(ctx context.Context, a ExternalAccount) (stri
 	default:
 		_, err = tx.ExecContext(ctx, `
 			UPDATE external_accounts
-			SET access_token_enc = ?, refresh_token_enc = ?,
-			    token_expires_at = ?, scopes = ?, needs_reconnect = 0
-			WHERE user_id = ? AND provider = ?
+			SET access_token_enc = $1, refresh_token_enc = $2,
+			    token_expires_at = $3, scopes = $4, needs_reconnect = 0
+			WHERE user_id = $5 AND provider = $6
 		`, encAccess, encRefresh, a.TokenExpiresAt, a.Scopes, userID, a.Provider)
 		if err != nil {
 			return "", err
@@ -107,7 +107,7 @@ func (s *Service) createUser(ctx context.Context, tx *sql.Tx) (string, error) {
 		return "", err
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO users(id, created_at) VALUES (?, ?)`,
+		`INSERT INTO users(id, created_at) VALUES ($1, $2)`,
 		id, s.now().UTC(),
 	)
 	if err != nil {
@@ -139,7 +139,7 @@ func (s *Service) AccessToken(ctx context.Context, userID, provider string,
 		SELECT external_id, access_token_enc, refresh_token_enc,
 		       token_expires_at, needs_reconnect
 		FROM external_accounts
-		WHERE user_id = ? AND provider = ?
+		WHERE user_id = $1 AND provider = $2
 	`, userID, provider).Scan(&externalID, &accessTokenEnc, &refreshTokenEnc,
 		&tokenExpiresAtRaw, &needsReconnect)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -174,7 +174,7 @@ func (s *Service) AccessToken(ctx context.Context, userID, provider string,
 		// so the next trigger can retry.
 		if errors.Is(err, ErrTerminalRefresh) {
 			_, _ = s.db.ExecContext(ctx,
-				`UPDATE external_accounts SET needs_reconnect = 1 WHERE user_id = ? AND provider = ?`,
+				`UPDATE external_accounts SET needs_reconnect = 1 WHERE user_id = $1 AND provider = $2`,
 				userID, provider,
 			)
 		}
@@ -190,8 +190,8 @@ func (s *Service) AccessToken(ctx context.Context, userID, provider string,
 	}
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE external_accounts
-		SET access_token_enc = ?, refresh_token_enc = ?, token_expires_at = ?
-		WHERE user_id = ? AND provider = ?
+		SET access_token_enc = $1, refresh_token_enc = $2, token_expires_at = $3
+		WHERE user_id = $4 AND provider = $5
 	`, newAccessEnc, newRefreshEnc, newExpires, userID, provider)
 	if err != nil {
 		return "", err
@@ -211,7 +211,7 @@ type IntegrationState struct {
 func (s *Service) IntegrationsByUser(ctx context.Context, userID string) ([]IntegrationState, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT provider, external_id, scopes, needs_reconnect, connected_at
-		FROM external_accounts WHERE user_id = ?
+		FROM external_accounts WHERE user_id = $1
 	`, userID)
 	if err != nil {
 		return nil, err

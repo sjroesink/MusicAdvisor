@@ -85,14 +85,14 @@ func TestFeed_SurfacesCandidatesInScoreOrder(t *testing.T) {
 	         VALUES ('al-2','ar-1','Side Drop','EP','2026-04-05')`)
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-1', 'mb_new_release', 0.9,
+	         VALUES ($1, 'album', 'al-1', 'mb_new_release', 0.9,
 	                 '{"via_artist_name":"Seed Artist","primary_type":"Album"}',
-	                 ?)`, userID, time.Now().Add(time.Hour))
+	                 $2)`, userID, time.Now().Add(time.Hour))
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-2', 'listenbrainz', 0.7,
+	         VALUES ($1, 'album', 'al-2', 'listenbrainz', 0.7,
 	                 '{"via_artist_name":"Other","lb_score":0.7}',
-	                 ?)`, userID, time.Now().Add(time.Hour))
+	                 $2)`, userID, time.Now().Add(time.Hour))
 
 	resp, _ := h.client.Get(h.server.URL + "/api/feed")
 	defer resp.Body.Close()
@@ -124,15 +124,15 @@ func TestFeed_MergesDuplicateDiscoverSources(t *testing.T) {
 	// three sources listed.
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-dup', 'listenbrainz', 0.9, '{"via_artist_name":"LB Seed"}', ?)`,
+	         VALUES ($1, 'album', 'al-dup', 'listenbrainz', 0.9, '{"via_artist_name":"LB Seed"}', $2)`,
 		userID, time.Now().Add(time.Hour))
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-dup', 'mb_artist_rels', 0.6, '{"via_artist_name":"MB Seed","relation":"collaboration"}', ?)`,
+	         VALUES ($1, 'album', 'al-dup', 'mb_artist_rels', 0.6, '{"via_artist_name":"MB Seed","relation":"collaboration"}', $2)`,
 		userID, time.Now().Add(time.Hour))
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-dup', 'lastfm_similar', 0.4, '{"via_artist_name":"LF Seed"}', ?)`,
+	         VALUES ($1, 'album', 'al-dup', 'lastfm_similar', 0.4, '{"via_artist_name":"LF Seed"}', $2)`,
 		userID, time.Now().Add(time.Hour))
 
 	resp, _ := h.client.Get(h.server.URL + "/api/feed")
@@ -162,7 +162,7 @@ func TestFeed_ExcludesExpiredCandidates(t *testing.T) {
 	db.Exec(`INSERT INTO albums (mbid, primary_artist_mbid, title, type) VALUES ('al-x','ar-x','T','Album')`)
 	db.Exec(`INSERT INTO discover_candidates
 	         (user_id, subject_type, subject_id, source, raw_score, reason_data, expires_at)
-	         VALUES (?, 'album', 'al-x', 'mb_new_release', 0.5, '{}', ?)`,
+	         VALUES ($1, 'album', 'al-x', 'mb_new_release', 0.5, '{}', $2)`,
 		userID, time.Now().Add(-1*time.Hour))
 
 	resp, _ := h.client.Get(h.server.URL + "/api/feed")

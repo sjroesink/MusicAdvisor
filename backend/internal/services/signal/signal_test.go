@@ -3,20 +3,15 @@ package signal_test
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 
-	"github.com/sjroesink/music-advisor/backend/internal/db"
+	"github.com/sjroesink/music-advisor/backend/internal/testutil"
 	"github.com/sjroesink/music-advisor/backend/internal/services/signal"
 )
 
 func openDB(t *testing.T) (*signal.SQLStore, *sql.DB) {
 	t.Helper()
-	conn, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
+	conn := testutil.OpenTestDB(t)
 
 	if _, err := conn.Exec(`INSERT INTO users(id) VALUES('u1')`); err != nil {
 		t.Fatal(err)
@@ -27,14 +22,14 @@ func openDB(t *testing.T) (*signal.SQLStore, *sql.DB) {
 func seedArtistAlbum(t *testing.T, conn *sql.DB, artistMBID, albumMBID string) {
 	t.Helper()
 	if _, err := conn.Exec(`
-		INSERT INTO artists (mbid, name) VALUES (?, ?)
+		INSERT INTO artists (mbid, name) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING
 	`, artistMBID, "a"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
 		INSERT INTO albums (mbid, primary_artist_mbid, title, type)
-		VALUES (?, ?, ?, 'Album')
+		VALUES ($1, $2, $3, 'Album')
 		ON CONFLICT DO NOTHING
 	`, albumMBID, artistMBID, "t"); err != nil {
 		t.Fatal(err)
@@ -45,7 +40,7 @@ func score(t *testing.T, conn *sql.DB, table, key, id string) (float64, int) {
 	t.Helper()
 	var score float64
 	var count int
-	q := `SELECT score, signal_count FROM ` + table + ` WHERE user_id='u1' AND ` + key + `=?`
+	q := `SELECT score, signal_count FROM ` + table + ` WHERE user_id='u1' AND ` + key + `=$1`
 	if err := conn.QueryRow(q, id).Scan(&score, &count); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, 0

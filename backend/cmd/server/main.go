@@ -59,10 +59,9 @@ func run() error {
 	logger.Info("starting music-advisor",
 		"addr", cfg.Address,
 		"base_url", cfg.BaseURL,
-		"db_path", cfg.DatabasePath,
 	)
 
-	database, err := db.Open(cfg.DatabasePath)
+	database, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -340,7 +339,7 @@ func rebuildAffinityMain(userID string) int {
 		slog.Error("rebuild: config", "err", err)
 		return 1
 	}
-	database, err := db.Open(cfg.DatabasePath)
+	database, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("rebuild: open db", "err", err)
 		return 1
