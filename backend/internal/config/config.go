@@ -25,6 +25,8 @@ type Config struct {
 	LastfmAPIKey        string
 	ListenBrainzToken   string
 	UserAgentContact    string
+	MusicBrainzBaseURL  string
+	MusicBrainzRPS      float64
 }
 
 // Load reads configuration from environment variables. In dev we also pick
@@ -47,6 +49,8 @@ func Load() (Config, error) {
 		LastfmAPIKey:        os.Getenv("MA_LASTFM_API_KEY"),
 		ListenBrainzToken:   os.Getenv("MA_LISTENBRAINZ_TOKEN"),
 		UserAgentContact:    os.Getenv("MA_USER_AGENT_CONTACT"),
+		MusicBrainzBaseURL:  env("MA_MUSICBRAINZ_BASE_URL", "http://10.0.0.170:5555/ws/2"),
+		MusicBrainzRPS:      envFloat("MA_MUSICBRAINZ_RPS", 40),
 	}
 
 	var problems []string
@@ -91,6 +95,15 @@ func loadDotEnvFiles() {
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed > 0 {
+			return parsed
+		}
 	}
 	return fallback
 }

@@ -104,7 +104,9 @@ func run() error {
 	var lbSimilarSvc *lbsimilar.Service
 	if spotifyClient != nil && cfg.UserAgentContact != "" {
 		mbClient, err := musicbrainz.NewClient(musicbrainz.Config{
-			Contact: cfg.UserAgentContact,
+			Contact:       cfg.UserAgentContact,
+			Base:          cfg.MusicBrainzBaseURL,
+			RatePerSecond: cfg.MusicBrainzRPS,
 		})
 		if err != nil {
 			return err
