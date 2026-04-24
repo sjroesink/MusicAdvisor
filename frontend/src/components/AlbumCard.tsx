@@ -105,7 +105,7 @@ export function AlbumCard({
           transition: "opacity 0.2s",
         }}
       >
-        <Cover label={item.cover} />
+        <Cover label={item.cover} imageUrl={item.coverArtUrl} />
         <div>
           <div
             style={{

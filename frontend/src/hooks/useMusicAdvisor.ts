@@ -34,8 +34,10 @@ interface FeedCard {
   length?: string;
   reason: string;
   cover?: string;
+  cover_art_url?: string;
   score: number;
   source: string;
+  sources?: string[];
 }
 
 interface FeedHeader {
@@ -64,6 +66,7 @@ function mapNewRelease(c: FeedCard): NewRelease {
     length: c.length ?? "",
     reason: c.reason,
     cover: c.cover ?? "",
+    coverArtUrl: c.cover_art_url,
   };
 }
 
@@ -78,6 +81,7 @@ function mapDiscover(c: FeedCard): DiscoverItem {
     length: c.length ?? "",
     reason: c.reason,
     cover: c.cover ?? "",
+    coverArtUrl: c.cover_art_url,
   };
 }
 

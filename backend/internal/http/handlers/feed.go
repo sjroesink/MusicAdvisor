@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjroesink/music-advisor/backend/internal/auth"
+	"github.com/sjroesink/music-advisor/backend/internal/providers/musicbrainz"
 )
 
 type FeedDeps struct {
@@ -36,19 +37,21 @@ type FeedHeader struct {
 }
 
 type FeedCard struct {
-	ID          string  `json:"id"`
-	SubjectType string  `json:"subject_type"`
-	Artist      string  `json:"artist"`
-	Title       string  `json:"title"`
-	Year        int     `json:"year,omitempty"`
-	Date        string  `json:"date,omitempty"`
-	Type        string  `json:"type"`
-	Tracks      int     `json:"tracks,omitempty"`
-	Length      string  `json:"length,omitempty"`
-	Reason      string  `json:"reason"`
-	Cover       string  `json:"cover,omitempty"`
-	Score       float64 `json:"score"`
-	Source      string  `json:"source"`
+	ID           string  `json:"id"`
+	SubjectType  string  `json:"subject_type"`
+	Artist       string  `json:"artist"`
+	Title        string  `json:"title"`
+	Year         int     `json:"year,omitempty"`
+	Date         string  `json:"date,omitempty"`
+	Type         string  `json:"type"`
+	Tracks       int     `json:"tracks,omitempty"`
+	Length       string  `json:"length,omitempty"`
+	Reason       string  `json:"reason"`
+	Cover        string  `json:"cover,omitempty"`
+	CoverArtURL  string  `json:"cover_art_url,omitempty"`
+	Score        float64 `json:"score"`
+	Source       string  `json:"source"`
+	Sources      []string `json:"sources,omitempty"`
 }
 
 type FeedRating struct {
@@ -238,6 +241,9 @@ func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCa
 		}
 		c.Reason = formatReason(source, reasonRaw, artistName)
 		c.Cover = coverFrom(artistName, title)
+		if subjectType == "album" {
+			c.CoverArtURL = musicbrainz.CoverArtURL(subjectID, 500)
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -290,10 +296,12 @@ func coverFrom(artist, title string) string {
 // reason_data JSON. Falls back to a generic phrasing when parsing fails.
 func formatReason(source, raw, artist string) string {
 	type reason struct {
-		ViaArtistName string  `json:"via_artist_name"`
-		ReleaseDate   string  `json:"release_date"`
-		PrimaryType   string  `json:"primary_type"`
-		LBScore       float64 `json:"lb_score"`
+		ViaArtistName    string  `json:"via_artist_name"`
+		ReleaseDate      string  `json:"release_date"`
+		PrimaryType      string  `json:"primary_type"`
+		LBScore          float64 `json:"lb_score"`
+		Relation         string  `json:"relation"`
+		LabelName        string  `json:"label_name"`
 	}
 	var r reason
 	_ = json.Unmarshal([]byte(raw), &r)
@@ -309,11 +317,50 @@ func formatReason(source, raw, artist string) string {
 			return "Similar artist to " + r.ViaArtistName + "."
 		}
 		return "Adjacent listen based on your affinity."
+	case "mb_artist_rels":
+		if r.ViaArtistName != "" && r.Relation != "" {
+			return humanRelation(r.Relation) + " " + r.ViaArtistName + "."
+		}
+		if r.ViaArtistName != "" {
+			return "Connected to " + r.ViaArtistName + "."
+		}
+		return "Related to an artist you know."
+	case "mb_same_label":
+		if r.LabelName != "" && r.ViaArtistName != "" {
+			return "Same label as " + r.ViaArtistName + " (" + r.LabelName + ")."
+		}
+		if r.LabelName != "" {
+			return "Released on " + r.LabelName + "."
+		}
+		return "Same label as an artist you follow."
+	case "lastfm_similar":
+		if r.ViaArtistName != "" {
+			return "Last.fm listeners of " + r.ViaArtistName + " also listen to this."
+		}
+		return "Last.fm similarity based on your affinity."
 	default:
 		if artist != "" {
 			return "Recommended from " + artist + "."
 		}
 		return ""
+	}
+}
+
+// humanRelation turns a MB relation-type into an English phrase.
+func humanRelation(relType string) string {
+	switch relType {
+	case "member of band":
+		return "Solo project of a member of"
+	case "has member":
+		return "Member's project from"
+	case "collaboration", "collaborator":
+		return "Collaborator with"
+	case "supporting musician":
+		return "Supporting musician for"
+	case "performer", "vocal", "instrument":
+		return "Performer with"
+	default:
+		return "Connected to"
 	}
 }
 

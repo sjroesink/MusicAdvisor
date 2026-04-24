@@ -11,6 +11,7 @@ export interface NewRelease {
   length: string;
   reason: string;
   cover: string;
+  coverArtUrl?: string;
 }
 
 export interface DiscoverItem {
@@ -23,6 +24,7 @@ export interface DiscoverItem {
   length: string;
   reason: string;
   cover: string;
+  coverArtUrl?: string;
 }
 
 export interface MusicData {
