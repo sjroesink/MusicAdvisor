@@ -359,6 +359,21 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 	if mbid == "" {
 		return errors.New("upsertArtist: mbid required")
 	}
+	// artists.spotify_id has a UNIQUE constraint; when a different mbid
+	// already holds this spotify_id (e.g. an earlier `sp:…` placeholder),
+	// ON CONFLICT (mbid) won't catch it. Update that row instead.
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE artists SET name = $2, updated_at = $3
+			WHERE spotify_id = $1 AND mbid <> $4
+		`, spotifyID, name, s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
 		VALUES ($1, $2, $3, $4)
@@ -379,6 +394,21 @@ func (s *Service) insertSnapshot(ctx context.Context, userID, kind, timeRange st
 }
 
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, mbid, spotifyID, title, artistMBID string) error {
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE albums
+			SET title = $2,
+			    primary_artist_mbid = COALESCE($3, primary_artist_mbid),
+			    updated_at = $4
+			WHERE spotify_id = $1 AND mbid <> $5
+		`, spotifyID, title, nullIfEmpty(artistMBID), s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
 		VALUES ($1, $2, $3, $4, 'Album', $5)
@@ -395,6 +425,23 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 	var duration any
 	if durationMs > 0 {
 		duration = durationMs / 1000
+	}
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE tracks
+			SET title        = $2,
+			    album_mbid   = COALESCE($3, album_mbid),
+			    artist_mbid  = COALESCE($4, artist_mbid),
+			    duration_sec = COALESCE($5, duration_sec),
+			    updated_at   = $6
+			WHERE spotify_id = $1 AND mbid <> $7
+		`, spotifyID, title, nullIfEmpty(albumMBID), nullIfEmpty(artistMBID), duration, s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)

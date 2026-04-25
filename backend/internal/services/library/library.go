@@ -423,6 +423,22 @@ func (s *Service) resolveOneAlbum(ctx context.Context, userID string, a spotify.
 // ── catalog upserts (unchanged) ─────────────────────────────────────
 
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
+	// artists.spotify_id has a UNIQUE constraint; when a different mbid
+	// already holds this spotify_id (e.g. a `sp:…` placeholder row written
+	// by an earlier listening/toplists run), ON CONFLICT (mbid) alone
+	// won't catch it. Update that row instead and short-circuit.
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE artists SET name = $2, updated_at = $3
+			WHERE spotify_id = $1 AND mbid <> $4
+		`, spotifyID, name, s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
 		VALUES ($1, $2, $3, $4)
@@ -442,6 +458,25 @@ func (s *Service) upsertAlbum(ctx context.Context, res resolver.Result, a spotif
 	albumType := normalizeAlbumType(res.PrimaryType, a.AlbumType)
 	releaseDate := firstNonEmpty(res.FirstReleaseDate, a.ReleaseDate)
 	title := firstNonEmpty(res.Title, a.Name)
+	if a.SpotifyID != "" {
+		r, err := s.db.ExecContext(ctx, `
+			UPDATE albums
+			SET title = $2,
+			    primary_artist_mbid = COALESCE($3, primary_artist_mbid),
+			    release_date = COALESCE($4, release_date),
+			    type = $5,
+			    track_count = COALESCE($6, track_count),
+			    updated_at = $7
+			WHERE spotify_id = $1 AND mbid <> $8
+		`, a.SpotifyID, title, nullIfEmpty(artistMBID), nullIfEmpty(releaseDate),
+			albumType, zeroAsNull(a.TotalTracks), s.now().UTC(), res.MBID)
+		if err != nil {
+			return err
+		}
+		if n, _ := r.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title,
 		                    release_date, type, track_count, updated_at)
@@ -460,6 +495,21 @@ func (s *Service) upsertAlbum(ctx context.Context, res resolver.Result, a spotif
 }
 
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, placeholderMBID, spotifyID, title, artistMBID string) error {
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE albums
+			SET title = $2,
+			    primary_artist_mbid = COALESCE($3, primary_artist_mbid),
+			    updated_at = $4
+			WHERE spotify_id = $1 AND mbid <> $5
+		`, spotifyID, title, nullIfEmpty(artistMBID), s.now().UTC(), placeholderMBID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
 		VALUES ($1, $2, $3, $4, 'Album', $5)

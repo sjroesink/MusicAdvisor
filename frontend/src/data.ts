@@ -3,6 +3,7 @@ export type AlbumType = "Album" | "EP" | "Single";
 export interface NewRelease {
   id: string;
   artist: string;
+  artistSpotifyId?: string;
   title: string;
   year: number;
   date: string;
@@ -12,11 +13,13 @@ export interface NewRelease {
   reason: string;
   cover: string;
   coverArtUrl?: string;
+  spotifyId?: string;
 }
 
 export interface DiscoverItem {
   id: string;
   artist: string;
+  artistSpotifyId?: string;
   title: string;
   year: number;
   type: AlbumType;
@@ -25,6 +28,7 @@ export interface DiscoverItem {
   reason: string;
   cover: string;
   coverArtUrl?: string;
+  spotifyId?: string;
 }
 
 export interface MusicData {

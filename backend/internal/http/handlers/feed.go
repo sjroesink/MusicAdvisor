@@ -49,21 +49,23 @@ type FeedHeader struct {
 }
 
 type FeedCard struct {
-	ID           string  `json:"id"`
-	SubjectType  string  `json:"subject_type"`
-	Artist       string  `json:"artist"`
-	Title        string  `json:"title"`
-	Year         int     `json:"year,omitempty"`
-	Date         string  `json:"date,omitempty"`
-	Type         string  `json:"type"`
-	Tracks       int     `json:"tracks,omitempty"`
-	Length       string  `json:"length,omitempty"`
-	Reason       string  `json:"reason"`
-	Cover        string  `json:"cover,omitempty"`
-	CoverArtURL  string  `json:"cover_art_url,omitempty"`
-	Score        float64 `json:"score"`
-	Source       string  `json:"source"`
-	Sources      []string `json:"sources,omitempty"`
+	ID             string   `json:"id"`
+	SubjectType    string   `json:"subject_type"`
+	Artist         string   `json:"artist"`
+	ArtistSpotifyID string  `json:"artist_spotify_id,omitempty"`
+	Title          string   `json:"title"`
+	Year           int      `json:"year,omitempty"`
+	Date           string   `json:"date,omitempty"`
+	Type           string   `json:"type"`
+	Tracks         int      `json:"tracks,omitempty"`
+	Length         string   `json:"length,omitempty"`
+	Reason         string   `json:"reason"`
+	Cover          string   `json:"cover,omitempty"`
+	CoverArtURL    string   `json:"cover_art_url,omitempty"`
+	SpotifyID      string   `json:"spotify_id,omitempty"`
+	Score          float64  `json:"score"`
+	Source         string   `json:"source"`
+	Sources        []string `json:"sources,omitempty"`
 }
 
 type FeedRating struct {
@@ -196,7 +198,9 @@ func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCa
 		       COALESCE(a.type, 'Album')    AS type,
 		       COALESCE(a.track_count, 0)   AS tracks,
 		       COALESCE(a.length_sec, 0)    AS length_sec,
-		       COALESCE(ar.name, '')        AS artist_name
+		       COALESCE(ar.name, '')        AS artist_name,
+		       COALESCE(a.spotify_id, '')   AS album_spotify_id,
+		       COALESCE(ar.spotify_id, '')  AS artist_spotify_id
 		FROM discover_candidates dc
 		LEFT JOIN albums  a  ON a.mbid  = dc.subject_id AND dc.subject_type = 'album'
 		LEFT JOIN artists ar ON ar.mbid = a.primary_artist_mbid
@@ -214,30 +218,35 @@ func readCards(ctx context.Context, db *sql.DB, userID, source string) ([]FeedCa
 	var out []FeedCard
 	for rows.Next() {
 		var (
-			subjectType string
-			subjectID   string
-			score       float64
-			reasonRaw   string
-			title       string
-			releaseDate string
-			albumType   string
-			trackCount  int
-			lengthSec   int
-			artistName  string
+			subjectType     string
+			subjectID       string
+			score           float64
+			reasonRaw       string
+			title           string
+			releaseDate     string
+			albumType       string
+			trackCount      int
+			lengthSec       int
+			artistName      string
+			albumSpotifyID  string
+			artistSpotifyID string
 		)
 		if err := rows.Scan(&subjectType, &subjectID, &score, &reasonRaw,
-			&title, &releaseDate, &albumType, &trackCount, &lengthSec, &artistName); err != nil {
+			&title, &releaseDate, &albumType, &trackCount, &lengthSec, &artistName,
+			&albumSpotifyID, &artistSpotifyID); err != nil {
 			return nil, err
 		}
 		c := FeedCard{
-			ID:          subjectID,
-			SubjectType: subjectType,
-			Artist:      artistName,
-			Title:       title,
-			Type:        albumType,
-			Tracks:      trackCount,
-			Score:       score,
-			Source:      source,
+			ID:              subjectID,
+			SubjectType:     subjectType,
+			Artist:          artistName,
+			ArtistSpotifyID: artistSpotifyID,
+			Title:           title,
+			Type:            albumType,
+			Tracks:          trackCount,
+			Score:           score,
+			Source:          source,
+			SpotifyID:       albumSpotifyID,
 		}
 		if y, d := splitReleaseDate(releaseDate); y > 0 {
 			c.Year = y

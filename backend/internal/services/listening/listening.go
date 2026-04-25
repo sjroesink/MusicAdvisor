@@ -329,7 +329,26 @@ func (s *Service) insertPlayHistory(ctx context.Context, userID, mbid string, rp
 	return n > 0, nil
 }
 
+// upsertArtist writes catalog rows from a Spotify recent-play. The table has
+// both a primary-key constraint on `mbid` and a UNIQUE on `spotify_id`; the
+// ON CONFLICT clause only handles mbid collisions. When the same spotify_id
+// already lives on a different mbid (typically a `sp:…` placeholder row
+// written earlier, before the resolver had a real MBID), we'd otherwise
+// explode with SQLSTATE 23505. Pre-update the existing row and short-circuit
+// when that happens.
 func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string) error {
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE artists SET name = $2, updated_at = $3
+			WHERE spotify_id = $1 AND mbid <> $4
+		`, spotifyID, name, s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO artists (mbid, spotify_id, name, updated_at)
 		VALUES ($1, $2, $3, $4)
@@ -342,6 +361,22 @@ func (s *Service) upsertArtist(ctx context.Context, mbid, spotifyID, name string
 }
 
 func (s *Service) upsertAlbumPlaceholder(ctx context.Context, mbid, spotifyID, title, artistMBID string) error {
+	// See upsertArtist for the rationale behind this pre-update path.
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE albums
+			SET title = $2,
+			    primary_artist_mbid = COALESCE($3, primary_artist_mbid),
+			    updated_at = $4
+			WHERE spotify_id = $1 AND mbid <> $5
+		`, spotifyID, title, nullIfEmpty(artistMBID), s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO albums (mbid, spotify_id, primary_artist_mbid, title, type, updated_at)
 		VALUES ($1, $2, $3, $4, 'Album', $5)
@@ -358,6 +393,24 @@ func (s *Service) upsertTrack(ctx context.Context, mbid, spotifyID, title string
 	var duration any
 	if durationMs > 0 {
 		duration = durationMs / 1000
+	}
+	// See upsertArtist for the rationale behind this pre-update path.
+	if spotifyID != "" {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE tracks
+			SET title        = $2,
+			    album_mbid   = COALESCE($3, album_mbid),
+			    artist_mbid  = COALESCE($4, artist_mbid),
+			    duration_sec = COALESCE($5, duration_sec),
+			    updated_at   = $6
+			WHERE spotify_id = $1 AND mbid <> $7
+		`, spotifyID, title, nullIfEmpty(albumMBID), nullIfEmpty(artistMBID), duration, s.now().UTC(), mbid)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tracks (mbid, spotify_id, album_mbid, artist_mbid, title, duration_sec, updated_at)

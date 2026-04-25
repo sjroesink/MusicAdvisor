@@ -26,6 +26,7 @@ interface FeedCard {
   id: string;
   subject_type: string;
   artist: string;
+  artist_spotify_id?: string;
   title: string;
   year?: number;
   date?: string;
@@ -35,6 +36,7 @@ interface FeedCard {
   reason: string;
   cover?: string;
   cover_art_url?: string;
+  spotify_id?: string;
   score: number;
   source: string;
   sources?: string[];
@@ -58,6 +60,7 @@ function mapNewRelease(c: FeedCard): NewRelease {
   return {
     id: c.id,
     artist: c.artist || "—",
+    artistSpotifyId: c.artist_spotify_id,
     title: c.title || "Untitled",
     year: c.year ?? new Date().getFullYear(),
     date: c.date ?? "",
@@ -67,6 +70,7 @@ function mapNewRelease(c: FeedCard): NewRelease {
     reason: c.reason,
     cover: c.cover ?? "",
     coverArtUrl: c.cover_art_url,
+    spotifyId: c.spotify_id,
   };
 }
 
@@ -74,6 +78,7 @@ function mapDiscover(c: FeedCard): DiscoverItem {
   return {
     id: c.id,
     artist: c.artist || "—",
+    artistSpotifyId: c.artist_spotify_id,
     title: c.title || "Untitled",
     year: c.year ?? new Date().getFullYear(),
     type: c.type,
@@ -82,6 +87,7 @@ function mapDiscover(c: FeedCard): DiscoverItem {
     reason: c.reason,
     cover: c.cover ?? "",
     coverArtUrl: c.cover_art_url,
+    spotifyId: c.spotify_id,
   };
 }
 

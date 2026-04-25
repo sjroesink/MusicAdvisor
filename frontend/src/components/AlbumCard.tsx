@@ -24,6 +24,22 @@ function dateLabel(item: AlbumItem, kind: CardKind) {
   return item.year;
 }
 
+// metaLine builds "N tracks · 42 min" but drops either half when the
+// backend doesn't know it yet (new-release candidates lack track counts
+// until the album is pulled into the library).
+function metaLine(item: AlbumItem, form: "long" | "short") {
+  const parts: string[] = [];
+  if (item.tracks > 0) {
+    if (form === "long") {
+      parts.push(`${item.tracks} ${item.tracks === 1 ? "track" : "tracks"}`);
+    } else {
+      parts.push(`${item.tracks} ${item.tracks === 1 ? "trk" : "trks"}`);
+    }
+  }
+  if (item.length) parts.push(item.length);
+  return parts.join(" · ");
+}
+
 export function AlbumCard({
   item,
   kind,
@@ -159,16 +175,18 @@ export function AlbumCard({
             }}
           >
             <TypeTag />
-            <span
-              style={{
-                fontSize: 11.5,
-                color: "var(--ink-faint)",
-                fontFamily: "var(--mono)",
-                letterSpacing: "0.04em",
-              }}
-            >
-              {item.tracks} {item.tracks === 1 ? "track" : "tracks"} · {item.length}
-            </span>
+            {metaLine(item, "long") && (
+              <span
+                style={{
+                  fontSize: 11.5,
+                  color: "var(--ink-faint)",
+                  fontFamily: "var(--mono)",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {metaLine(item, "long")}
+              </span>
+            )}
           </div>
           {!compact && (
             <div
@@ -203,7 +221,7 @@ export function AlbumCard({
         transition: "opacity 0.2s",
       }}
     >
-      <Cover label={item.cover} />
+      <Cover label={item.cover} imageUrl={item.coverArtUrl} />
       <div style={{ minWidth: 0 }}>
         <div
           style={{
@@ -218,9 +236,11 @@ export function AlbumCard({
             {item.artist}
           </div>
           <TypeTag />
-          <span className="eyebrow" style={{ fontSize: 9.5 }}>
-            {item.tracks} {item.tracks === 1 ? "trk" : "trks"} · {item.length}
-          </span>
+          {metaLine(item, "short") && (
+            <span className="eyebrow" style={{ fontSize: 9.5 }}>
+              {metaLine(item, "short")}
+            </span>
+          )}
         </div>
         <div
           className="display"
@@ -277,19 +297,35 @@ interface CardActionsProps {
   onRate: (id: string, value: Rating | null) => void;
 }
 
+// spotifyOpenURL prefers a deep link to the exact album when the backend
+// has its Spotify ID cached (i.e. the album was ingested through library /
+// top-lists / recently-played at some point). Items discovered purely via
+// MB or Last.fm have no Spotify ID, so we fall back to Spotify's search
+// page pre-populated with "artist title" — one click closer than the
+// landing page, but not a true deep link.
+function spotifyOpenURL(item: AlbumItem) {
+  if (item.spotifyId) return `https://open.spotify.com/album/${item.spotifyId}`;
+  const q = encodeURIComponent(`${item.artist} ${item.title}`.trim());
+  return `https://open.spotify.com/search/${q}`;
+}
+
 function CardActions({ item, rating, onDismiss, onRate }: CardActionsProps) {
   const heard = rating != null;
+  const openURL = spotifyOpenURL(item);
+  const directLink = Boolean(item.spotifyId);
 
   return (
     <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-      <button
+      <a
         className="btn btn-tiny btn-ghost"
-        style={{ gap: 5 }}
-        onClick={() => window.open("#", "_blank", "noopener,noreferrer")}
-        title="Open in Spotify"
+        style={{ gap: 5, textDecoration: "none" }}
+        href={openURL}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={directLink ? "Open album in Spotify" : "Search in Spotify"}
       >
-        <Icon name="ext" size={12} /> Open
-      </button>
+        <Icon name="ext" size={12} /> {directLink ? "Open" : "Search"}
+      </a>
 
       {!heard && (
         <button
