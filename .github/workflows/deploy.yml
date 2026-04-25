@@ -1,0 +1,44 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/sjroesink/musicadvisor:latest
+            ghcr.io/sjroesink/musicadvisor:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trigger Unraid deploy
+        env:
+          WEBHOOK_SECRET: ${{ secrets.UNRAID_DEPLOY_WEBHOOK_SECRET }}
+        run: |
+          curl -fsS -X POST https://deploy.roes.ink/hooks/deploy \
+            -H 'Content-Type: application/json' \
+            -H "X-Webhook-Secret: ${WEBHOOK_SECRET}" \
+            -d '{"stack":"musicadvisor"}'

@@ -15,10 +15,13 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    # No host port published by default — only the app talks to pg over the
-    # compose network. Uncomment to inspect with psql/pgAdmin from the host.
-    # ports:
-    #   - "5432:5432"
+    # Published to the host so `go run ./cmd/server` on the host can reach
+    # pg. In a production compose-only deploy the app runs in its own
+    # container and can talk to pg over the compose network — you can
+    # comment this out (and `bind: 127.0.0.1:5432:5432` if you only want
+    # it loopback-only).
+    ports:
+      - "5432:5432"
 
   music-advisor:
     build:
