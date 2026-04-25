@@ -11,9 +11,12 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ advisor, theme, right }: AppHeaderProps) {
+  const isLoading =
+    advisor.stage === "connecting" || advisor.stage === "loading";
   return (
     <header
       style={{
+        position: "relative",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
@@ -21,6 +24,7 @@ export function AppHeader({ advisor, theme, right }: AppHeaderProps) {
         borderBottom: "1px solid var(--rule-soft)",
       }}
     >
+      {isLoading && <div className="header-sweep" aria-hidden /> }
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <div
           style={{

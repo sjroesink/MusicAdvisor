@@ -185,6 +185,49 @@ button {
   }
 }
 
+/* ——— Header loading sweep ——— */
+.header-sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.header-sweep::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    transparent
+  );
+  animation: headerSweep 1.6s linear infinite;
+  will-change: left;
+}
+@keyframes headerSweep {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-sweep {
+    background: var(--accent);
+    opacity: 0.35;
+  }
+  .header-sweep::before {
+    display: none;
+  }
+}
+
 /* ——— Card entrance ——— */
 @keyframes cardIn {
   from {
