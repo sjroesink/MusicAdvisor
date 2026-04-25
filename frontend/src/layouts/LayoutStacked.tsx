@@ -13,7 +13,7 @@ interface LayoutStackedProps {
 
 export function LayoutStacked({ advisor, theme, density }: LayoutStackedProps) {
   return (
-    <div style={{ maxWidth: 880, margin: "0 auto", padding: "0 32px 120px" }}>
+    <div className="page">
       <AppHeader advisor={advisor} theme={theme} />
       <div
         style={{

@@ -14,18 +14,8 @@ export function AppHeader({ advisor, theme, right }: AppHeaderProps) {
   const isLoading =
     advisor.stage === "connecting" || advisor.stage === "loading";
   return (
-    <header
-      style={{
-        position: "relative",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        padding: "22px 0 18px",
-        borderBottom: "1px solid var(--rule-soft)",
-      }}
-    >
-      {isLoading && <div className="header-sweep" aria-hidden /> }
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+    <header className="app-header">
+      <div className="ah-brand">
         <div
           style={{
             width: 22,
@@ -33,6 +23,7 @@ export function AppHeader({ advisor, theme, right }: AppHeaderProps) {
             borderRadius: "50%",
             border: "1.25px solid var(--ink)",
             position: "relative",
+            flexShrink: 0,
           }}
           aria-hidden
         >
@@ -49,11 +40,12 @@ export function AppHeader({ advisor, theme, right }: AppHeaderProps) {
           Music advisor
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <HeaderStatus advisor={advisor} />
-        {right}
+      <HeaderStatus advisor={advisor} />
+      {right}
+      <div className="ah-toggle">
         <ThemeToggle mode={theme.mode} onCycle={theme.cycle} />
       </div>
+      {isLoading && <div className="header-sweep" aria-hidden />}
     </header>
   );
 }

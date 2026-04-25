@@ -209,26 +209,20 @@ export function AlbumCard({
 
   return (
     <div
-      className="card-in"
+      className={`ac-list card-in${compact ? " compact" : ""}`}
       style={{
-        display: "grid",
-        gridTemplateColumns: compact ? "64px 1fr auto" : "96px 1fr auto",
-        gap: compact ? 16 : 22,
-        alignItems: "start",
-        padding: compact ? "14px 0" : "20px 0",
-        borderTop: "1px solid var(--rule-soft)",
         opacity: dismissed ? 0.35 : 1,
-        transition: "opacity 0.2s",
       }}
     >
-      <Cover label={item.cover} imageUrl={item.coverArtUrl} />
-      <div style={{ minWidth: 0 }}>
+      <div className="ac-cover">
+        <Cover label={item.cover} imageUrl={item.coverArtUrl} />
+      </div>
+      <div className="ac-meta">
         <div
           style={{
             display: "flex",
             alignItems: "center",
             gap: 10,
-            marginBottom: 4,
             flexWrap: "wrap",
           }}
         >
@@ -241,49 +235,44 @@ export function AlbumCard({
               {metaLine(item, "short")}
             </span>
           )}
-        </div>
-        <div
-          className="display"
-          style={{
-            fontSize: compact ? 19 : 24,
-            marginBottom: compact ? 6 : 10,
-            color: "var(--ink)",
-          }}
-        >
-          {item.title}
-        </div>
-        {!compact && (
-          <div
+          <span
             style={{
-              fontSize: 13,
-              color: "var(--ink-soft)",
-              lineHeight: 1.5,
-              maxWidth: 520,
-              fontStyle: "italic",
+              marginLeft: "auto",
+              fontFamily: "var(--mono)",
+              fontSize: 10.5,
+              color: "var(--ink-faint)",
+              letterSpacing: "0.08em",
+              whiteSpace: "nowrap",
             }}
           >
-            {item.reason}
-          </div>
-        )}
+            {dateLabel(item, kind)}
+          </span>
+        </div>
       </div>
       <div
+        className="ac-title display"
         style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-end",
-          gap: 8,
+          fontSize: compact ? 19 : 24,
+          color: "var(--ink)",
         }}
       >
+        {item.title}
+      </div>
+      {!compact && (
         <div
+          className="ac-reason"
           style={{
-            fontFamily: "var(--mono)",
-            fontSize: 10.5,
-            color: "var(--ink-faint)",
-            letterSpacing: "0.08em",
+            fontSize: 13,
+            color: "var(--ink-soft)",
+            lineHeight: 1.5,
+            maxWidth: 520,
+            fontStyle: "italic",
           }}
         >
-          {dateLabel(item, kind)}
+          {item.reason}
         </div>
+      )}
+      <div className="ac-actions">
         <CardActions item={item} onDismiss={onDismiss} onRate={onRate} rating={rating} />
       </div>
     </div>
@@ -315,7 +304,7 @@ function CardActions({ item, rating, onDismiss, onRate }: CardActionsProps) {
   const directLink = Boolean(item.spotifyId);
 
   return (
-    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+    <div className="card-actions">
       <a
         className="btn btn-tiny btn-ghost"
         style={{ gap: 5, textDecoration: "none" }}

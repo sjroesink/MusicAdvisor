@@ -228,6 +228,145 @@ button {
   }
 }
 
+/* ——— Page container ——— */
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 32px 120px;
+}
+@media (max-width: 640px) {
+  .page {
+    padding: 0 18px 80px;
+  }
+}
+
+/* ——— App header layout ——— */
+.app-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 22px 0 18px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.app-header .ah-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.app-header .header-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+  order: 0;
+  justify-content: flex-end;
+}
+.app-header .ah-toggle {
+  order: 1;
+  flex-shrink: 0;
+}
+.app-header .header-status .status-text {
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+@media (max-width: 640px) {
+  .app-header {
+    padding: 18px 0 14px;
+    row-gap: 10px;
+  }
+  .app-header .header-status {
+    order: 2;
+    flex-basis: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+  .app-header .header-status .status-text {
+    max-width: none;
+  }
+}
+
+/* ——— Album card (list variant) ——— */
+.ac-list {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  grid-template-areas:
+    "cover meta actions"
+    "cover title actions"
+    "cover reason actions";
+  column-gap: 22px;
+  row-gap: 6px;
+  align-items: start;
+  padding: 20px 0;
+  border-top: 1px solid var(--rule-soft);
+  transition: opacity 0.2s;
+}
+.ac-list.compact {
+  grid-template-columns: 64px 1fr auto;
+  grid-template-areas:
+    "cover meta actions"
+    "cover title actions";
+  column-gap: 16px;
+  row-gap: 4px;
+  padding: 14px 0;
+}
+.ac-list .ac-cover { grid-area: cover; min-width: 0; }
+.ac-list .ac-meta { grid-area: meta; min-width: 0; }
+.ac-list .ac-title { grid-area: title; min-width: 0; }
+.ac-list .ac-reason { grid-area: reason; min-width: 0; }
+.ac-list .ac-actions { grid-area: actions; align-self: start; }
+@media (max-width: 640px) {
+  .ac-list {
+    grid-template-columns: 72px 1fr;
+    grid-template-areas:
+      "cover meta"
+      "title title"
+      "reason reason"
+      "actions actions";
+    column-gap: 14px;
+    row-gap: 8px;
+    padding: 18px 0;
+  }
+  .ac-list.compact {
+    grid-template-columns: 56px 1fr;
+    grid-template-areas:
+      "cover meta"
+      "title title"
+      "actions actions";
+    column-gap: 12px;
+    row-gap: 6px;
+    padding: 14px 0;
+  }
+  .ac-list .ac-actions {
+    justify-self: start;
+  }
+}
+
+/* ——— Card actions row (wraps gracefully) ——— */
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  justify-content: flex-end;
+}
+@media (max-width: 640px) {
+  .card-actions {
+    justify-content: flex-start;
+  }
+}
+
 /* ——— Card entrance ——— */
 @keyframes cardIn {
   from {

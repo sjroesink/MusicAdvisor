@@ -4,39 +4,20 @@ interface HeaderStatusProps {
   advisor: MusicAdvisor;
 }
 
-// Single slot that morphs between loading and ready states.
-// Fixed min-width keeps the header from shifting when status changes.
+// Sits in the brand row on wide viewports and drops onto its own
+// full-width row on narrow ones — see .app-header media queries in
+// styles.css. Layout / responsive bits live in CSS so they can be
+// overridden by media queries (inline styles would always win).
 export function HeaderStatus({ advisor }: HeaderStatusProps) {
   if (advisor.stage === "idle") return null;
   const isLoading = advisor.stage === "connecting" || advisor.stage === "loading";
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        marginRight: 6,
-        minWidth: 260,
-        justifyContent: "flex-end",
-      }}
-      aria-live="polite"
-    >
+    <div className="header-status" aria-live="polite">
       {isLoading ? (
         <>
           <span className="dot dot-pulse" aria-hidden />
-          <span
-            style={{
-              fontSize: 11.5,
-              fontFamily: "var(--mono)",
-              color: "var(--ink-faint)",
-              letterSpacing: "0.06em",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              maxWidth: 240,
-            }}
-          >
+          <span className="status-text">
             {advisor.step || "Working…"}
             {advisor.libraryCount > 0 ? ` · ${advisor.libraryCount}` : ""}
           </span>
@@ -44,15 +25,7 @@ export function HeaderStatus({ advisor }: HeaderStatusProps) {
       ) : (
         <>
           <span className="dot" aria-hidden />
-          <span
-            style={{
-              fontSize: 11.5,
-              fontFamily: "var(--mono)",
-              color: "var(--ink-faint)",
-              letterSpacing: "0.06em",
-              whiteSpace: "nowrap",
-            }}
-          >
+          <span className="status-text">
             {advisor.libraryCount} saved · synced just now
           </span>
         </>
